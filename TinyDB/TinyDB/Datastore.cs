@@ -5,43 +5,96 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+namespace JetBrains.Annotations {
+    /// <summary>Marked element could be <c>null</c></summary>
+    [AttributeUsage(AttributeTargets.All)] internal sealed class CanBeNullAttribute : Attribute { }
+    /// <summary>Marked element could never be <c>null</c></summary>
+    [AttributeUsage(AttributeTargets.All)] internal sealed class NotNullAttribute : Attribute { }
+    /// <summary>IEnumerable, Task.Result, or Lazy.Value property can never be null.</summary>
+    [AttributeUsage(AttributeTargets.All)] internal sealed class ItemNotNullAttribute : Attribute { }
+    /// <summary>IEnumerable, Task.Result, or Lazy.Value property can be null.</summary>
+    [AttributeUsage(AttributeTargets.All)] internal sealed class ItemCanBeNullAttribute : Attribute { }
+}
 
 namespace TinyDB
 {
+    using JetBrains.Annotations;
+
+
     public class Datastore : IDisposable
     {
+        [NotNull] private readonly FileStream _fs;
+        [NotNull] private readonly Engine _engine;
 
-        protected Datastore() { }
+        private Datastore(FileStream fs, Engine engine)
+        {
+            _fs = fs ?? throw new ArgumentNullException(nameof(fs));
+            _engine = engine ?? throw new ArgumentNullException(nameof(engine));
+        }
 
 
         public static Datastore TryConnect(string storagePath){
-return null;//TODO: this
+            if (string.IsNullOrWhiteSpace(storagePath)) throw new ArgumentNullException(nameof(storagePath));
+
+            var normalPath = Path.GetFullPath(storagePath);
+            var directory = Path.GetDirectoryName(normalPath) ?? "";
+
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+            if (!File.Exists(normalPath))
+            {
+                using (var fileStream = new FileStream(normalPath, FileMode.CreateNew, FileAccess.Write))
+                using (var writer = new BinaryWriter(fileStream))
+                {
+                    Engine.CreateEmptyFile(writer);
+                }
+            }
+
+            var fs = new FileStream(normalPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite, (int)BasePage.PAGE_SIZE, FileOptions.None);
+            var engine = new Engine(fs);
+
+            return new Datastore(fs, engine);
         }
 
         // keep the guid -- it's the key
-        public EntryInfo Store(string fileName, Stream input){
-        return null; //TODO:this
+        // TODO: find by path
+        public EntryInfo Store(string fileName, Stream input)
+        {
+            var entry = new EntryInfo(fileName);
+            _engine.Write(entry, input);
+            return entry;
         }
 
         // TODO: null `output` = just return info
-        public EntryInfo Read(Guid id, Stream output){
-        return null; // TODO: this
+        public EntryInfo Read(Guid id, Stream output)
+        {
+            if (output == null)
+            {
+                var indexNode = _engine.Search(id);
+                return indexNode == null ? null : new EntryInfo(indexNode);
+            }
+
+            return _engine.Read(id, output);
         }
 
-        public bool Delete(Guid id){
-        //todo:this
-        return false;
+        public bool Delete(Guid id)
+        {
+            return _engine.Delete(id);
         }
 
         public EntryInfo[] ListFiles(){
-        return null; // todo: this
+            return _engine.ListAllFiles();
         }
 
 
         /// <inheritdoc />
         public void Dispose()
         {
-            //TODO: IMPLEMENT_ME();
+            _engine.PersistPages(); // Write any pages still cached in memory
+
+            if (_fs.CanWrite) _fs.Flush();
+
+            _engine.Dispose();
+            _fs.Dispose();
         }
     }
 
@@ -615,7 +668,7 @@ return null;//TODO: this
             {
                 if (IsLockException(ex))
                 {
-                    if (tryCount >= DELAY_TRY_LOCK_FILE)
+                    if (tryCount >= MAX_TRY_LOCK_FILE)
                         throw new Exception("Database file is in lock for a long time");
 
                     Thread.Sleep(tryCount * DELAY_TRY_LOCK_FILE);
@@ -1140,6 +1193,39 @@ return null;//TODO: this
 
             Reader.Close();
         }
+
+        public static void CreateEmptyFile(BinaryWriter writer)
+        {
+            // Create new header instance
+            var header = new Header();
+
+            header.IndexRootPageID = 0;
+            header.FreeIndexPageID = 0;
+            header.FreeDataPageID = uint.MaxValue;
+            header.LastFreeDataPageID = uint.MaxValue;
+            header.LastPageID = 0;
+
+            HeaderFactory.WriteToFile(header, writer);
+
+            // Create a first fixed index page
+            var pageIndex = new IndexPage(0);
+            pageIndex.NodeIndex = 0;
+            pageIndex.NextPageID = uint.MaxValue;
+
+            // Create first fixed index node, with fixed middle guid
+            var indexNode = pageIndex.Nodes[0];
+            indexNode.ID = new Guid(new byte[] { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 });
+            indexNode.IsDeleted = true;
+            indexNode.Right = new IndexLink();
+            indexNode.Left = new IndexLink();
+            indexNode.DataPageID = uint.MaxValue;
+            indexNode.FileName = string.Empty;
+            indexNode.FileExtension = string.Empty;
+
+            PageFactory.WriteToFile(pageIndex, writer);
+
+        }
+
     }
 
 
