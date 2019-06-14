@@ -57,8 +57,9 @@ namespace TinyDB
 
         // keep the guid -- it's the key
         // TODO: find by path
-        public EntryInfo Store(string fileName, Stream input)
+        public EntryInfo Store([NotNull]string fileName, [NotNull]Stream input)
         {
+            if (input == null) throw new ArgumentNullException(nameof(input));
             var entry = new EntryInfo(fileName);
             _engine.Write(entry, input);
             return entry;
@@ -156,37 +157,29 @@ namespace TinyDB
     
     public sealed class FileDBStream : Stream
     {
-        private Engine _engine = null;
-        private readonly long _streamLength = 0;
+        [NotNull]private readonly Engine _engine;
 
-        private long _streamPosition = 0;
-        private DataPage _currentPage = null;
-        private int _positionInPage = 0;
-        private EntryInfo _info = null;
+        private long _streamPosition;
+        private DataPage _currentPage;
+        private int _positionInPage;
 
         internal FileDBStream(Engine engine, Guid id)
         {
-            _engine = engine;
+            _engine = engine ?? throw new ArgumentNullException(nameof(engine));
 
             var indexNode = _engine.Search(id);
             if (indexNode != null)
             {
-                _streamLength = indexNode.FileLength;
+                Length = indexNode.FileLength;
                 _currentPage = PageFactory.GetDataPage(indexNode.DataPageID, engine.Reader, false);
-                _info = new EntryInfo(indexNode);
+                FileInfo = new EntryInfo(indexNode);
             }
         }
 
         /// <summary>
         /// Get file information
         /// </summary>
-        public EntryInfo FileInfo
-        {
-            get
-            {
-                return _info;
-            }
-        }
+        public EntryInfo FileInfo { get; }
 
         public override bool CanRead
         {
@@ -208,10 +201,7 @@ namespace TinyDB
             throw new NotSupportedException();
         }
 
-        public override long Length
-        {
-            get { return _streamLength; }
-        }
+        public override long Length { get; }
 
         public override long Position
         {
@@ -272,10 +262,10 @@ namespace TinyDB
     internal enum PageType { Data = 1, Index = 2 }
     internal class PageFactory
     {
-        public static void ReadFromFile(IndexPage indexPage, BinaryReader reader)
+        public static void ReadFromFile([NotNull]IndexPage indexPage, [NotNull]BinaryReader reader)
         {
             // Seek the stream to the fist byte on page
-            long initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + ((long)indexPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
+            long initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + (indexPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
 
             if (reader.ReadByte() != (byte)PageType.Index)
                 throw new Exception($"PageID {indexPage.PageID} is not a Index Page");
@@ -289,28 +279,33 @@ namespace TinyDB
             for (int i = 0; i <= indexPage.NodeIndex; i++)
             {
                 var node = indexPage.Nodes[i];
+                if (node == null) continue;
 
                 node.ID = new Guid(reader.ReadBytes(16));
 
                 node.IsDeleted = reader.ReadBoolean();
 
-                node.Right.Index = reader.ReadByte();
-                node.Right.PageID = reader.ReadUInt32();
-                node.Left.Index = reader.ReadByte();
-                node.Left.PageID = reader.ReadUInt32();
-
+                if (node.Right != null)
+                {
+                    node.Right.Index = reader.ReadByte();
+                    node.Right.PageID = reader.ReadUInt32();
+                }
+                if (node.Left != null)
+                {
+                    node.Left.Index = reader.ReadByte();
+                    node.Left.PageID = reader.ReadUInt32();
+                }
                 node.DataPageID = reader.ReadUInt32();
 
                 node.FileName = Encoding.ASCII.GetString(reader.ReadBytes(IndexNode.FILENAME_SIZE));
-                node.FileExtension = Encoding.ASCII.GetString(reader.ReadBytes(IndexNode.FILE_EXTENSION_SIZE));
                 node.FileLength = reader.ReadUInt32();
             }
         }
 
-        public static void WriteToFile(IndexPage indexPage, BinaryWriter writer)
+        public static void WriteToFile([NotNull]IndexPage indexPage, [NotNull]BinaryWriter writer)
         {
             // Seek the stream to the fist byte on page
-            long initPos = writer.BaseStream.Seek(Header.HEADER_SIZE + ((long)indexPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
+            long initPos = writer.BaseStream.Seek(Header.HEADER_SIZE + (indexPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
 
             // Write page header 
             writer.Write((byte)indexPage.Type);
@@ -323,29 +318,34 @@ namespace TinyDB
             for (int i = 0; i <= indexPage.NodeIndex; i++)
             {
                 var node = indexPage.Nodes[i];
+                if (node == null) continue;
 
                 writer.Write(node.ID.ToByteArray());
 
                 writer.Write(node.IsDeleted);
 
-                writer.Write(node.Right.Index);
-                writer.Write(node.Right.PageID);
-                writer.Write(node.Left.Index);
-                writer.Write(node.Left.PageID);
-
+                if (node.Right != null)
+                {
+                    writer.Write(node.Right.Index);
+                    writer.Write(node.Right.PageID);
+                }
+                if (node.Left != null)
+                {
+                    writer.Write(node.Left.Index);
+                    writer.Write(node.Left.PageID);
+                }
                 writer.Write(node.DataPageID);
 
                 writer.Write(node.FileName.LimitedByteString(IndexNode.FILENAME_SIZE));
-                writer.Write(node.FileExtension.LimitedByteString(IndexNode.FILE_EXTENSION_SIZE));
                 writer.Write(node.FileLength);
             }
 
         }
 
-        public static void ReadFromFile(DataPage dataPage, BinaryReader reader, bool onlyHeader)
+        public static void ReadFromFile([NotNull]DataPage dataPage, [NotNull]BinaryReader reader, bool onlyHeader)
         {
             // Seek the stream on first byte from data page
-            long initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + ((long)dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
+            long initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
 
             if (reader.ReadByte() != (byte)PageType.Data)
                 throw new Exception($"PageID {dataPage.PageID} is not a Data Page");
@@ -361,14 +361,14 @@ namespace TinyDB
                 reader.BaseStream.Seek(initPos + DataPage.HEADER_SIZE, SeekOrigin.Begin);
 
                 // Read all bytes from page
-                dataPage.DataBlock = reader.ReadBytes(dataPage.DataBlockLength);
+                dataPage.SetBlock(reader.ReadBytes(dataPage.DataBlockLength));
             }
         }
 
-        public static void WriteToFile(DataPage dataPage, BinaryWriter writer)
+        public static void WriteToFile([NotNull]DataPage dataPage, [NotNull]BinaryWriter writer)
         {
             // Seek the stream on first byte from data page
-            long initPos = writer.BaseStream.Seek(Header.HEADER_SIZE + ((long)dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
+            long initPos = writer.BaseStream.Seek(Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
 
             // Write data page header
             writer.Write((byte)dataPage.Type);
@@ -382,33 +382,33 @@ namespace TinyDB
                 // Seek the stream at the end of page header
                 writer.BaseStream.Seek(initPos + DataPage.HEADER_SIZE, SeekOrigin.Begin);
 
-                writer.Write(dataPage.DataBlock, 0, (int)dataPage.DataBlockLength);
+                writer.Write(dataPage.DataBlock, 0, dataPage.DataBlockLength);
             }
         }
 
-        public static IndexPage GetIndexPage(uint pageID, BinaryReader reader)
+        [NotNull]
+        public static IndexPage GetIndexPage(uint pageID, [NotNull]BinaryReader reader)
         {
             var indexPage = new IndexPage(pageID);
             ReadFromFile(indexPage, reader);
             return indexPage;
         }
 
-        public static DataPage GetDataPage(uint pageID, BinaryReader reader, bool onlyHeader)
+        [NotNull]public static DataPage GetDataPage(uint pageID, [NotNull]BinaryReader reader, bool onlyHeader)
         {
             var dataPage = new DataPage(pageID);
             ReadFromFile(dataPage, reader, onlyHeader);
             return dataPage;
         }
 
-        public static BasePage GetBasePage(uint pageID, BinaryReader reader)
+        public static BasePage GetBasePage(uint pageID, [NotNull]BinaryReader reader)
         {
             // Seek the stream at begin of page
-            long initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + ((long)pageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
+            reader.BaseStream.Seek(Header.HEADER_SIZE + (pageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
 
-            if (reader.ReadByte() == (byte)PageType.Index)
-                return GetIndexPage(pageID, reader);
-            else
-                return GetDataPage(pageID, reader, true);
+            return reader.ReadByte() == (byte) PageType.Index
+                ? (BasePage) GetIndexPage(pageID, reader)
+                : GetDataPage(pageID, reader, true);
         }
     }
 
@@ -419,23 +419,22 @@ namespace TinyDB
     {
         public const int CACHE_SIZE = 200;
 
-        private BinaryReader _reader;
-        private BinaryWriter _writer;
-        private Dictionary<uint, IndexPage> _cache;
-        private uint _rootPageID;
+        [NotNull]private readonly BinaryReader _reader;
+        [NotNull]private readonly BinaryWriter _writer;
+        [NotNull]private readonly Dictionary<uint, IndexPage> _cache;
+        private readonly uint _rootPageID;
 
         public CacheIndexPage(BinaryReader reader, BinaryWriter writer, uint rootPageID)
         {
-            _reader = reader;
-            _writer = writer;
+            _reader = reader ?? throw new ArgumentNullException(nameof(reader));
+            _writer = writer ?? throw new ArgumentNullException(nameof(writer));
             _cache = new Dictionary<uint,IndexPage>();
             _rootPageID = rootPageID;
         }
 
-        public IndexPage GetPage(uint pageID)
+        [NotNull]public IndexPage GetPage(uint pageID)
         {
-            if (_cache.ContainsKey(pageID))
-                return _cache[pageID];
+            if (_cache.ContainsKey(pageID)) return _cache[pageID] ?? throw new InvalidOperationException("Thread race in page cache");
 
             var indexPage = PageFactory.GetIndexPage(pageID, _reader);
             
@@ -443,20 +442,16 @@ namespace TinyDB
 
             return indexPage;
         }
-
-        public void AddPage(IndexPage indexPage)
-        {
-            AddPage(indexPage, false);
-        }
-
-        public void AddPage(IndexPage indexPage, bool markAsDirty)
+        
+        public void AddPage([NotNull]IndexPage indexPage, bool markAsDirty)
         {
             if(!_cache.ContainsKey(indexPage.PageID))
             {
                 if(_cache.Count >= CACHE_SIZE)
                 {
-                    // Remove fist page that are not the root page (because I use too much)
-                    var pageToRemove = _cache.First(x => x.Key != _rootPageID);
+                    // Remove first page that is not the root page (because I use too much)
+                    var pageToRemove = _cache.FirstOrDefault(x => x.Key != _rootPageID);
+                    if (pageToRemove.Value == null) throw new Exception("Could not find a non-root page");
 
                     if (pageToRemove.Value.IsDirty)
                     {
@@ -470,22 +465,19 @@ namespace TinyDB
                 _cache.Add(indexPage.PageID, indexPage);
             }
             
-            if(markAsDirty)
-                indexPage.IsDirty = true;
+            if(markAsDirty) indexPage.IsDirty = true;
         }
 
         public void PersistPages()
         {
             // Check which pages is dirty and need to saved on disk 
-            var pagesToPersist = _cache.Values.Where(x => x.IsDirty).ToArray();
+            var pagesToPersist = _cache.Values.Where(x => x?.IsDirty == true).ToArray();
+            if (pagesToPersist.Length <= 0) return;
 
-            if (pagesToPersist.Length > 0)
+            foreach (var indexPage in pagesToPersist)
             {
-                foreach (var indexPage in pagesToPersist)
-                {
-                    PageFactory.WriteToFile(indexPage, _writer);
-                    indexPage.IsDirty = false;
-                }
+                PageFactory.WriteToFile(indexPage, _writer);
+                indexPage.IsDirty = false;
             }
         }
     }
@@ -508,7 +500,7 @@ namespace TinyDB
         public override PageType Type { get { return PageType.Index; } }  //  1 byte
         public byte NodeIndex { get; set; }                               //  1 byte
 
-        public IndexNode[] Nodes { get; set; }
+        [NotNull]public IndexNode[] Nodes { get; set; }
 
         public bool IsDirty { get; set; }
 
@@ -517,12 +509,12 @@ namespace TinyDB
             PageID = pageID;
             NextPageID = uint.MaxValue;
             NodeIndex = 0;
-            Nodes = new IndexNode[IndexPage.NODES_PER_PAGE];
+            Nodes = new IndexNode[NODES_PER_PAGE];
             IsDirty = false;
 
-            for (int i = 0; i < IndexPage.NODES_PER_PAGE; i++)
+            for (int i = 0; i < NODES_PER_PAGE; i++)
             {
-                var node = Nodes[i] = new IndexNode(this);
+                Nodes[i] = new IndexNode(this);
             }
         }
 
@@ -558,7 +550,7 @@ namespace TinyDB
         public bool IsEmpty { get; set; }                                //  1 byte
         public short DataBlockLength { get; set; }                       //  2 bytes
 
-        public byte[] DataBlock { get; set; }
+        [NotNull]public byte[] DataBlock { get; private set;}
 
         public DataPage(uint pageID)
         {
@@ -566,14 +558,19 @@ namespace TinyDB
             IsEmpty = true;
             DataBlockLength = 0;
             NextPageID = uint.MaxValue;
-            DataBlock = new byte[DataPage.DATA_PER_PAGE];
+            DataBlock = new byte[DATA_PER_PAGE];
+        }
+
+        public void SetBlock(byte[] readBytes)
+        {
+            if (readBytes != null) DataBlock = readBytes;
         }
     }
 
     internal class IndexNode
     {
-        public const int FILENAME_SIZE = 41;       // Size of file name string
-        public const int FILE_EXTENSION_SIZE = 5;  // Size of file extension string TODO: remove this?
+        // NOTE: this seems to be wasting a *lot* of space by forcing the file name to something small
+        public const int FILENAME_SIZE = 255;       // Size of file name string
         public const int INDEX_NODE_SIZE = 81;     // Node Index size
 
         public Guid ID { get; set; }               // 16 bytes
@@ -587,7 +584,6 @@ namespace TinyDB
 
         // Info
         public string FileName { get; set; }       // 41 bytes (file name + extension) -- this could be 46 bytes or more
-        public string FileExtension { get; set; }  //  5 bytes (only extension without dot ".") TODO: remove this?
         public uint FileLength { get; set; }       //  4 bytes
 
         public IndexPage IndexPage { get; set; }
@@ -602,11 +598,10 @@ namespace TinyDB
             IndexPage = indexPage;
         }
 
-        public void UpdateFromEntry(EntryInfo entity)
+        public void UpdateFromEntry([NotNull]EntryInfo entity)
         {
             ID = entity.ID;
             FileName = entity.FileName;
-            FileExtension = "";
             FileLength = entity.FileLength;
         }
     }
@@ -618,7 +613,7 @@ namespace TinyDB
         private const int DELAY_TRY_LOCK_FILE = 50; // in miliseconds
 
         
-        public static byte[] LimitedByteString(this string str, int size)
+        [NotNull]public static byte[] LimitedByteString(this string str, int size)
         {
             var buffer = new byte[size];
             var strbytes = Encoding.ASCII.GetBytes(str??"");
@@ -631,24 +626,26 @@ namespace TinyDB
 
         public static void Write(this BinaryWriter writer, Guid guid)
         {
-            writer.Write(guid.ToByteArray());
+            writer?.Write(guid.ToByteArray());
         }
 
         public static void Write(this BinaryWriter writer, DateTime dateTime)
         {
-            writer.Write(dateTime.Ticks);
+            writer?.Write(dateTime.Ticks);
         }
 
         public static long Seek(this BinaryWriter writer, long position)
         {
+            if (writer == null) throw new Exception("Tried to seek a null writer");
             return writer.BaseStream.Seek(position, SeekOrigin.Begin);
         }
 
         public static void Lock(this BinaryWriter writer, long position, long length)
         {
+            if (writer == null) throw new Exception("Tried to lock a null writer");
             var fileStream = writer.BaseStream as FileStream;
 
-            TryLockFile(fileStream, position, length, 0);
+            if (fileStream != null) TryLockFile(fileStream, position, length, 0);
         }
 
         public static bool IsLockException(IOException exception)
@@ -658,7 +655,7 @@ namespace TinyDB
         }
 
 
-        private static void TryLockFile(FileStream fileStream, long position, long length, int tryCount)
+        private static void TryLockFile([NotNull]FileStream fileStream, long position, long length, int tryCount)
         {
             try
             {
@@ -675,21 +672,20 @@ namespace TinyDB
 
                     TryLockFile(fileStream, position, length, ++tryCount);
                 }
-                else
-                    throw ex;
+                else throw;
             }
         }
 
         public static void Unlock(this BinaryWriter writer, long position, long length)
         {
-            var fileStream = writer.BaseStream as FileStream;
-            fileStream.Unlock(position, length);
+            var fileStream = writer?.BaseStream as FileStream;
+            fileStream?.Unlock(position, length);
         }
     }
     
     internal class DataFactory
     {
-        public static uint GetStartDataPageID(Engine engine)
+        public static uint GetStartDataPageID([NotNull]Engine engine)
         {
             if (engine.Header.FreeDataPageID != uint.MaxValue) // I have free page inside the disk file. Use it
             {
@@ -705,15 +701,13 @@ namespace TinyDB
                 
                 return startPage.PageID;
             }
-            else // Don't have free data pages, create new one.
-            {
-                engine.Header.LastPageID++;
-                return engine.Header.LastPageID;
-            }
+            // Don't have free data pages, create new one.
+            engine.Header.LastPageID++;
+            return engine.Header.LastPageID;
         }
 
         // Take a new data page on sequence and update the last
-        public static DataPage GetNewDataPage(DataPage basePage, Engine engine)
+        [NotNull]public static DataPage GetNewDataPage([NotNull]DataPage basePage, [NotNull]Engine engine)
         {
             if (basePage.NextPageID != uint.MaxValue)
             {
@@ -728,23 +722,21 @@ namespace TinyDB
 
                 return dataPage;
             }
-            else
-            {
-                var pageID = ++engine.Header.LastPageID;
-                DataPage newPage = new DataPage(pageID);
-                basePage.NextPageID = newPage.PageID;
-                PageFactory.WriteToFile(basePage, engine.Writer); // Write last page on disk
-                return newPage;
-            }
+
+            var pageID = ++engine.Header.LastPageID;
+            var newPage = new DataPage(pageID);
+            basePage.NextPageID = newPage.PageID;
+            PageFactory.WriteToFile(basePage, engine.Writer); // Write last page on disk
+            return newPage;
         }
 
-        public static void InsertFile(IndexNode node, Stream stream, Engine engine)
+        public static void InsertFile([NotNull]IndexNode node, [NotNull]Stream stream, [NotNull]Engine engine)
         {
             DataPage dataPage = null;
             var buffer = new byte[DataPage.DATA_PER_PAGE];
             uint totalBytes = 0;
 
-            int read = 0;
+            int read;
             int dataPerPage = (int)DataPage.DATA_PER_PAGE;
 
             while ((read = stream.Read(buffer, 0, dataPerPage)) > 0)
@@ -756,14 +748,16 @@ namespace TinyDB
                 else
                     dataPage = GetNewDataPage(dataPage, engine);
 
-                if (!dataPage.IsEmpty) // This is never to happend!!
-                    throw new Exception($"Page {dataPage.PageID} is not empty");
+                if (dataPage == null) throw new Exception("Data page was null");
+
+                if (!dataPage.IsEmpty) throw new Exception($"Page {dataPage.PageID} is not empty");
 
                 Array.Copy(buffer, dataPage.DataBlock, read);
                 dataPage.IsEmpty = false;
                 dataPage.DataBlockLength = (short)read;
             }
 
+            if (dataPage == null) throw new Exception("Data page was null");
             // If the last page point to another one, i need to fix that
             if (dataPage.NextPageID != uint.MaxValue)
             {
@@ -779,7 +773,7 @@ namespace TinyDB
 
         }
 
-        public static void ReadFile(IndexNode node, Stream stream, Engine engine)
+        public static void ReadFile([NotNull]IndexNode node, [NotNull]Stream stream, [NotNull]Engine engine)
         {
             var dataPage = PageFactory.GetDataPage(node.DataPageID, engine.Reader, false);
 
@@ -795,7 +789,7 @@ namespace TinyDB
 
         }
 
-        public static void MarkAsEmpty(uint firstPageID, Engine engine)
+        public static void MarkAsEmpty(uint firstPageID, [NotNull]Engine engine)
         {
             var dataPage = PageFactory.GetDataPage(firstPageID, engine.Reader, true);
             uint lastPageID = uint.MaxValue;
@@ -848,7 +842,7 @@ namespace TinyDB
 
     internal class HeaderFactory
     {
-        public static void ReadFromFile(Header header, BinaryReader reader)
+        public static void ReadFromFile([NotNull]Header header, [NotNull]BinaryReader reader)
         {
             // Seek the stream on 0 position to read header
             reader.BaseStream.Seek(0, SeekOrigin.Begin);
@@ -868,7 +862,7 @@ namespace TinyDB
             header.IsDirty = false;
         }
 
-        public static void WriteToFile(Header header, BinaryWriter writer)
+        public static void WriteToFile([NotNull]Header header, [NotNull]BinaryWriter writer)
         {
             // Seek the stream on 0 position to save header
             writer.BaseStream.Seek(0, SeekOrigin.Begin);
@@ -886,47 +880,48 @@ namespace TinyDB
     }
  internal class IndexFactory
     {
-        public static IndexNode GetRootIndexNode(Engine engine)
+        public static IndexNode GetRootIndexNode([NotNull]Engine engine)
         {
-            IndexPage rootIndexPage = engine.CacheIndexPage.GetPage(engine.Header.IndexRootPageID);
+            var rootIndexPage = engine.CacheIndexPage.GetPage(engine.Header.IndexRootPageID);
             return rootIndexPage.Nodes[0];
         }
 
-        public static IndexNode BinaryInsert(EntryInfo target, IndexNode baseNode, Engine engine)
+        public static IndexNode BinaryInsert([NotNull]EntryInfo target, [NotNull]IndexNode baseNode, [NotNull]Engine engine)
         {
             var dif = baseNode.ID.CompareTo(target.ID);
+            if (baseNode.Right == null || baseNode.Left == null) throw new Exception("Index node structure is broken");
 
-            if (dif == 1) // > Maior (Right)
+            switch (dif)
             {
-                if (baseNode.Right.IsEmpty)
-                    return BinaryInsertNode(baseNode.Right, baseNode, target, engine);
-                else
-                    return BinaryInsert(target, GetChildIndexNode(baseNode.Right, engine), engine);
-            }
-            else if (dif == -1) // < Menor (Left)
-            {
-                if (baseNode.Left.IsEmpty)
-                    return BinaryInsertNode(baseNode.Left, baseNode, target, engine);
-                else
-                    return BinaryInsert(target, GetChildIndexNode(baseNode.Left, engine), engine);
-            }
-            else
-            {
-                throw new Exception("GUID collision.");
+                // > Greater (Right)
+                case 1:
+                    return baseNode.Right.IsEmpty
+                        ? BinaryInsertNode(baseNode.Right, baseNode, target, engine)
+                        : BinaryInsert(target, GetChildIndexNode(baseNode.Right, engine), engine);
+                // < Less (Left)
+                case -1:
+                    return baseNode.Left.IsEmpty
+                        ? BinaryInsertNode(baseNode.Left, baseNode, target, engine)
+                        : BinaryInsert(target, GetChildIndexNode(baseNode.Left, engine), engine);
+                default:
+                    throw new Exception("GUID collision.");
             }
         }
 
-        private static IndexNode GetChildIndexNode(IndexLink link, Engine engine)
+        [NotNull]private static IndexNode GetChildIndexNode([NotNull]IndexLink link, [NotNull]Engine engine)
         {
             var pageIndex = engine.CacheIndexPage.GetPage(link.PageID);
-            return pageIndex.Nodes[link.Index];
+            return pageIndex.Nodes[link.Index]?? throw new Exception("Index node structure is incomplete");
         }
 
-        private static IndexNode BinaryInsertNode(IndexLink baseLink, IndexNode baseNode, EntryInfo entry, Engine engine)
+        private static IndexNode BinaryInsertNode([NotNull]IndexLink baseLink, [NotNull]IndexNode baseNode, [NotNull]EntryInfo entry, [NotNull]Engine engine)
         {
-            // Must insert my new nodo
+            // Insert new node
             var pageIndex = engine.GetFreeIndexPage();
-            var newNode = pageIndex.Nodes[pageIndex.NodeIndex];
+            var newNode = pageIndex?.Nodes[pageIndex.NodeIndex];
+            if (newNode == null) throw new Exception("Failed to find new node during BinaryInsertNode");
+            if (baseNode.IndexPage == null) throw new Exception("Invalid page structure in BinaryInsertNode");
+
 
             baseLink.PageID = pageIndex.PageID;
             baseLink.Index = pageIndex.NodeIndex;
@@ -934,36 +929,34 @@ namespace TinyDB
             newNode.UpdateFromEntry(entry);
             newNode.DataPageID = DataFactory.GetStartDataPageID(engine);
 
-            if (pageIndex.PageID != baseNode.IndexPage.PageID)
-                engine.CacheIndexPage.AddPage(baseNode.IndexPage, true);
+            if (pageIndex.PageID != baseNode.IndexPage.PageID) engine.CacheIndexPage.AddPage(baseNode.IndexPage, true);
 
             engine.CacheIndexPage.AddPage(pageIndex, true);
 
             return newNode;
         }
 
-        public static IndexNode BinarySearch(Guid target, IndexNode baseNode, Engine engine)
+        [CanBeNull]
+        public static IndexNode BinarySearch(Guid target, [NotNull]IndexNode baseNode, [NotNull]Engine engine)
         {
             var dif = baseNode.ID.CompareTo(target);
+            if (baseNode.Right == null || baseNode.Left == null) throw new Exception("Incomplete structure in BinarySearch");
 
-            if (dif == 1) // > Maior (Right)
+            switch (dif)
             {
-                if (baseNode.Right.IsEmpty) // If there no ones on right, GUID not found
-                    return null;
-                else
-                    return BinarySearch(target, GetChildIndexNode(baseNode.Right, engine), engine); // Recursive call on right node
-            }
-            else if (dif == -1) // < Menor (Left)
-            {
-                if (baseNode.Left.IsEmpty) // If there no ones on left, GUID not found
-                    return null;
-                else
-                    return BinarySearch(target, GetChildIndexNode(baseNode.Left, engine), engine); // Recursive call on left node
-            }
-            else
-            {
-                // Found it
-                return baseNode;
+                // > Maior (Right)
+                case 1:
+                    return baseNode.Right.IsEmpty
+                        ? null
+                        : BinarySearch(target, GetChildIndexNode(baseNode.Right, engine), engine);
+                // < Menor (Left)
+                case -1:
+                    return baseNode.Left.IsEmpty
+                        ? null
+                        : BinarySearch(target, GetChildIndexNode(baseNode.Left, engine), engine);
+                default:
+                    // Found it
+                    return baseNode;
             }
         }
 
@@ -984,7 +977,7 @@ namespace TinyDB
             FileLength = 0;
         }
 
-        internal EntryInfo(IndexNode node)
+        internal EntryInfo([NotNull]IndexNode node)
         {
             ID = node.ID;
             FileName = node.FileName;
@@ -994,23 +987,21 @@ namespace TinyDB
 
         internal class Engine : IDisposable
     {
-        public BinaryReader Reader { get; private set; }
-        public BinaryWriter Writer { get; private set; }
-        public CacheIndexPage CacheIndexPage { get; private set; } // Used for cache index pages.
-        public Header Header { get; private set; }
+        [NotNull]public BinaryReader Reader { get; }
+        [NotNull]public BinaryWriter Writer { get; }
+        [NotNull]public CacheIndexPage CacheIndexPage { get; } // Used for cache index pages.
+        [NotNull]public Header Header { get; }
 
-        public Engine(FileStream stream)
+        public Engine([NotNull]FileStream stream)
         {
+            if (!stream.CanWrite) throw new Exception("A read/write stream is required");
             Reader = new BinaryReader(stream);
 
-            if (stream.CanWrite)
-            {
-                Writer = new BinaryWriter(stream);
-                Writer.Lock(Header.LOCKER_POS, 1);
-            }
+            Writer = new BinaryWriter(stream);
+            Writer.Lock(Header.LOCKER_POS, 1);
 
             Header = new Header();
-            HeaderFactory.ReadFromFile(Header, this.Reader);
+            HeaderFactory.ReadFromFile(Header, Reader);
 
             CacheIndexPage = new CacheIndexPage(Reader, Writer, Header.IndexRootPageID);
         }
@@ -1033,12 +1024,10 @@ namespace TinyDB
 
                 return newIndexPage;
             }
-            else
-            {
-                // Has more free index on same index page? return them
-                freeIndexPage.NodeIndex++; // Reserve space
-                return freeIndexPage;
-            }
+
+            // Has more free index on same index page? return them
+            freeIndexPage.NodeIndex++; // Reserve space
+            return freeIndexPage;
         }
 
         public DataPage GetPageData(uint pageID)
@@ -1055,13 +1044,16 @@ namespace TinyDB
         }
 
         // Implement file physic storage
-        public void Write(EntryInfo entry, Stream stream)
+        public void Write([NotNull]EntryInfo entry, [NotNull]Stream stream)
         {
             // Take the first index page
-            IndexNode rootIndexNode = IndexFactory.GetRootIndexNode(this);
+            var rootIndexNode = IndexFactory.GetRootIndexNode(this);
+            if (rootIndexNode == null) throw new Exception("Could not find root index node: database is corrupt");
 
             // Search and insert the index
             var indexNode = IndexFactory.BinaryInsert(entry, rootIndexNode, this);
+            if (indexNode == null) throw new Exception("Could not insert new index node");
+
 
             // In this moment, the index are ready and saved. I use to add the file
             DataFactory.InsertFile(indexNode, stream, this);
@@ -1079,7 +1071,8 @@ namespace TinyDB
         public IndexNode Search(Guid id)
         {
             // Take the root node from inital index page
-            IndexNode rootIndexNode = IndexFactory.GetRootIndexNode(this);
+            var rootIndexNode = IndexFactory.GetRootIndexNode(this);
+            if (rootIndexNode == null) throw new Exception("Could not find root index node: database is corrupt");
 
             var indexNode = IndexFactory.BinarySearch(id, rootIndexNode, this);
 
@@ -1090,17 +1083,16 @@ namespace TinyDB
             return indexNode;
         }
 
-        public EntryInfo Read(Guid id, Stream stream)
+        public EntryInfo Read(Guid id, [NotNull]Stream stream)
         {
             // Search from index node
             var indexNode = Search(id);
 
             // If index node is null, not found the guid
-            if (indexNode == null)
-                return null;
+            if (indexNode == null) return null;
 
             // Create a entry based on index node
-            EntryInfo entry = new EntryInfo(indexNode);
+            var entry = new EntryInfo(indexNode);
 
             // Read data from the index pointer to stream
             DataFactory.ReadFile(indexNode, stream, this);
@@ -1123,8 +1115,7 @@ namespace TinyDB
             var indexNode = Search(id);
 
             // If null, not found (return false)
-            if (indexNode == null)
-                return false;
+            if (indexNode?.IndexPage == null) return false;
 
             // Delete the index node logicaly
             indexNode.IsDeleted = true;
@@ -1138,32 +1129,29 @@ namespace TinyDB
             // Set header as Dirty to be saved on dispose
             Header.IsDirty = true;
 
-            return true; // Confirma a exclusão
+            return true; // Confirm deletion
         }
 
         public EntryInfo[] ListAllFiles()
         {
             // Get root index page from cache
             var pageIndex = CacheIndexPage.GetPage(Header.IndexRootPageID);
-            bool cont = true;
 
-            List<EntryInfo> list = new List<EntryInfo>();
+            var list = new List<EntryInfo>();
 
-            while (cont)
+            while (true)
             {
                 for (int i = 0; i <= pageIndex.NodeIndex; i++)
                 {
                     // Convert node (if is not logicaly deleted) to Entry
                     var node = pageIndex.Nodes[i];
-                    if (!node.IsDeleted)
-                        list.Add(new EntryInfo(node));
+                    if (node != null && !node.IsDeleted) list.Add(new EntryInfo(node));
                 }
 
+                if (pageIndex.NextPageID == uint.MaxValue) break;
+
                 // Go to the next page
-                if (pageIndex.NextPageID != uint.MaxValue)
-                    pageIndex = CacheIndexPage.GetPage(pageIndex.NextPageID);
-                else
-                    cont = false;
+                pageIndex = CacheIndexPage.GetPage(pageIndex.NextPageID);
             }
 
             return list.ToArray();
@@ -1184,17 +1172,14 @@ namespace TinyDB
 
         public void Dispose()
         {
-            if (Writer != null)
-            {
-                // Unlock the file, prevent concurrence writing
-                Writer.Unlock(Header.LOCKER_POS, 1);
-                Writer.Close();
-            }
+            // Unlock the file, prevent concurrence writing
+            Writer.Unlock(Header.LOCKER_POS, 1);
+            Writer.Close();
 
             Reader.Close();
         }
 
-        public static void CreateEmptyFile(BinaryWriter writer)
+        public static void CreateEmptyFile([NotNull]BinaryWriter writer)
         {
             // Create new header instance
             var header = new Header();
@@ -1208,19 +1193,17 @@ namespace TinyDB
             HeaderFactory.WriteToFile(header, writer);
 
             // Create a first fixed index page
-            var pageIndex = new IndexPage(0);
-            pageIndex.NodeIndex = 0;
-            pageIndex.NextPageID = uint.MaxValue;
+            var pageIndex = new IndexPage(0) {NodeIndex = 0, NextPageID = uint.MaxValue};
 
             // Create first fixed index node, with fixed middle guid
             var indexNode = pageIndex.Nodes[0];
+            if (indexNode == null) throw new Exception("Failed to create primary index node");
             indexNode.ID = new Guid(new byte[] { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 });
             indexNode.IsDeleted = true;
             indexNode.Right = new IndexLink();
             indexNode.Left = new IndexLink();
             indexNode.DataPageID = uint.MaxValue;
             indexNode.FileName = string.Empty;
-            indexNode.FileExtension = string.Empty;
 
             PageFactory.WriteToFile(pageIndex, writer);
 

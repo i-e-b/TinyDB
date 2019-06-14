@@ -9,6 +9,11 @@ This is a very small, path-based data store. It is reduced to as few files as po
 
 If you need something similar but more capable, I recommend https://github.com/mbdavid/LiteDB or https://www.sqlite.org
 
+## Plans
+
+* [ ] Fast file seek based on internal file path
+* [ ] Reduce code to minimum
+
 ## Using
 
-to-do...
+See the unit tests for now.
