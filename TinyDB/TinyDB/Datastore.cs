@@ -20,19 +20,21 @@ namespace TinyDB
 {
     using JetBrains.Annotations;
 
-
     public class Datastore : IDisposable
     {
-        [NotNull] private readonly FileStream _fs;
+        [NotNull] private readonly Stream _fs;
         [NotNull] private readonly Engine _engine;
 
-        private Datastore(FileStream fs, Engine engine)
+        private Datastore(Stream fs, Engine engine)
         {
             _fs = fs ?? throw new ArgumentNullException(nameof(fs));
             _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         }
 
 
+        /// <summary>
+        /// Open a connection to a datastore by file path
+        /// </summary>
         public static Datastore TryConnect(string storagePath){
             if (string.IsNullOrWhiteSpace(storagePath)) throw new ArgumentNullException(nameof(storagePath));
 
@@ -54,9 +56,36 @@ namespace TinyDB
 
             return new Datastore(fs, engine);
         }
+        
+        /// <summary>
+        /// Open a connection to a datastore by seekable stream.
+        /// Throws an exception if the stream does not support seeking and reading.
+        /// <para></para>
+        /// If an empty stream is provided (length == 0), it will be initialised. Otherwise it must be
+        /// a valid storage stream.
+        /// </summary>
+        public static Datastore TryConnect(Stream storage)
+        {
+            if (storage == null || !storage.CanSeek || !storage.CanRead) throw new ArgumentException("Storage stream must support seeking and reading", nameof(storage));
 
-        // keep the guid -- it's the key
-        // TODO: find by path
+            if (storage.Length == 0)
+            {
+                if (!storage.CanWrite) throw new ArgumentException("Attempted to initialise a read-only stream", nameof(storage));
+                using (var writer = new BinaryWriter(storage, Encoding.UTF8, leaveOpen: true)) { Engine.CreateEmptyFile(writer); }
+                storage.Seek(0, SeekOrigin.Begin);
+            }
+            var engine = new Engine(storage);
+
+            return new Datastore(storage, engine);
+        }
+
+
+        /// <summary>
+        /// Write a file to the given path, returning the entry info
+        /// </summary>
+        /// <param name="fileName">File name and path</param>
+        /// <param name="input">Readable stream. Don't forget to seek.</param>
+        /// <returns>File entry info, including storage key</returns>
         public EntryInfo Store([NotNull]string fileName, [NotNull]Stream input)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -65,7 +94,14 @@ namespace TinyDB
             return entry;
         }
 
-        // TODO: null `output` = just return info
+        /// <summary>
+        /// Read stored file to a stream, also returning file details.
+        /// If a null stream is passed, only details will be returned.
+        /// Returns null if no file was found.
+        /// </summary>
+        /// <param name="id">File ID</param>
+        /// <param name="output">Writable stream. Don't forget to seek before calling.</param>
+        /// <returns>File entry info</returns>
         public EntryInfo Read(Guid id, Stream output)
         {
             if (output == null)
@@ -77,17 +113,27 @@ namespace TinyDB
             return _engine.Read(id, output);
         }
 
+        /// <summary>
+        /// Delete a file by ID.
+        /// Ignores requests to delete non existent files
+        /// </summary>
+        /// <param name="id">File ID</param>
+        /// <returns>Returns true if there wa a file to be deleted</returns>
         public bool Delete(Guid id)
         {
             return _engine.Delete(id);
         }
 
+        /// <summary>
+        /// List all files currently stored
+        /// </summary>
         public EntryInfo[] ListFiles(){
             return _engine.ListAllFiles();
         }
 
-
-        /// <inheritdoc />
+        /// <summary>
+        /// Save changes and close file
+        /// </summary>
         public void Dispose()
         {
             _engine.PersistPages(); // Write any pages still cached in memory
@@ -97,10 +143,39 @@ namespace TinyDB
             _engine.Dispose();
             _fs.Dispose();
         }
+
+        /// <summary>
+        /// Find all files under a path root
+        /// </summary>
+        /// <param name="pathRoot">Left-side of a path to match</param>
+        /// <returns>Found file entries</returns>
+        public EntryInfo[] FindFiles(string pathRoot)
+        {
+            // TODO: the plan is to have pages of path-Trie linked to file IDs
+            return null;
+        }
+
+        /// <summary>
+        /// Write any cached data to the underlying storage
+        /// </summary>
+        public void Flush()
+        {
+            _engine.PersistPages();
+            if (_fs.CanWrite) _fs.Flush();
+        }
     }
 
 
 
+
+    public static class GuidExtensions {
+        /// <summary>
+        /// Render a GUID as a Base64 string
+        /// </summary>
+        [NotNull]public static string ShortString(this Guid g) {
+            return Convert.ToBase64String(g.ToByteArray());
+        }
+    }
 
 
     internal class Header
@@ -973,14 +1048,20 @@ namespace TinyDB
         internal EntryInfo(string fileName)
         {
             ID = Guid.NewGuid();
-            FileName = fileName;
+            FileName = Clean(fileName);
             FileLength = 0;
+        }
+
+        // Remove trailing \u0000 characters.
+        private string Clean(string fileName)
+        {
+            return fileName?.TrimEnd('\u0000');
         }
 
         internal EntryInfo([NotNull]IndexNode node)
         {
             ID = node.ID;
-            FileName = node.FileName;
+            FileName = Clean(node.FileName);
             FileLength = node.FileLength;
         }
     }
@@ -992,7 +1073,7 @@ namespace TinyDB
         [NotNull]public CacheIndexPage CacheIndexPage { get; } // Used for cache index pages.
         [NotNull]public Header Header { get; }
 
-        public Engine([NotNull]FileStream stream)
+        public Engine([NotNull]Stream stream)
         {
             if (!stream.CanWrite) throw new Exception("A read/write stream is required");
             Reader = new BinaryReader(stream);
