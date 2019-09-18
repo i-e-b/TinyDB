@@ -13,8 +13,10 @@ If you need something similar but more capable, I recommend https://github.com/m
 
 * [ ] Fast file seek based on internal file path
 * [ ] Reduce code to minimum
-* [ ] Remove requirement to access disk (use only seekable stream) to support UWP.
-* [ ] Bring in ( https://github.com/i-e-b/DiskQueue ) as a journal file?
+* [x] Remove requirement to access disk (use only seekable stream) to support UWP.
+* [ ] Make thread-safe
+* [ ] Make crash resilient (maybe bring in [ https://github.com/i-e-b/DiskQueue ] as a journal file?)
+
 
 ## Using
 

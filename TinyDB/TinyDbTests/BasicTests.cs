@@ -2,6 +2,7 @@
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using NUnit.Framework;
 using TinyDB;
 // ReSharper disable PossibleNullReferenceException
@@ -275,7 +276,42 @@ namespace TinyDbTests
 
         [Test]
         public void multiple_threads_writing_is_supported () {
-            Assert.Fail("Not yet implemented");
+            ThreadPool.SetMinThreads(10,10);
+            ThreadPool.SetMaxThreads(10,10);
+
+            int count = 0;
+            const int target = 100;
+
+            using (var stream = new MemoryStream())
+            {
+                var subject = Datastore.TryConnect(stream);
+
+                for (int i = 0; i < target; i++)
+                {
+                    var j = i;// unbind closure
+                    ThreadPool.QueueUserWorkItem(x =>
+                    {
+                        try
+                        {
+                            var data = MakeSourceStream("Data for item " + j);
+                            subject.Store($"file_{j}", data);
+                        }
+                        catch (Exception ex) {
+                            Console.WriteLine($"Item {j} failed with: " + ex);
+                        }
+                        finally
+                        {
+                            Interlocked.Increment(ref count);
+                        }
+                    });
+                }
+
+                // wait for threads
+                while (count < target) { Thread.Sleep(100); }
+
+                var everything = subject.ListFiles();
+                Assert.That(everything.Length, Is.EqualTo(target), $"Expected {target} files, but got {everything.Length}");
+            }
         }
 
         private static MemoryStream MakeSourceStream()

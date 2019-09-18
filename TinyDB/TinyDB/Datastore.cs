@@ -20,6 +20,9 @@ namespace TinyDB
 {
     using JetBrains.Annotations;
 
+    /// <summary>
+    /// This is the entry point to the data storage
+    /// </summary>
     public class Datastore : IDisposable
     {
         [NotNull] private readonly Stream _fs;
@@ -45,9 +48,8 @@ namespace TinyDB
             if (!File.Exists(normalPath))
             {
                 using (var fileStream = new FileStream(normalPath, FileMode.CreateNew, FileAccess.Write))
-                using (var writer = new BinaryWriter(fileStream))
                 {
-                    Engine.CreateEmptyFile(writer);
+                    Engine.CreateEmptyFile(fileStream);
                 }
             }
 
@@ -71,7 +73,7 @@ namespace TinyDB
             if (storage.Length == 0)
             {
                 if (!storage.CanWrite) throw new ArgumentException("Attempted to initialise a read-only stream", nameof(storage));
-                using (var writer = new BinaryWriter(storage, Encoding.UTF8, leaveOpen: true)) { Engine.CreateEmptyFile(writer); }
+                Engine.CreateEmptyFile(storage);
                 storage.Seek(0, SeekOrigin.Begin);
             }
             var engine = new Engine(storage);
@@ -165,8 +167,73 @@ namespace TinyDB
         }
     }
 
+    /// <summary>
+    /// Provides thread-locked access to a stream, as either a BinaryReader or BinaryWriter
+    /// </summary>
+    public class ThreadlockBinaryStream : IDisposable
+    {
+        private volatile Stream _token, _master;
+        private bool _closeBase;
 
+        public ThreadlockBinaryStream([NotNull]Stream baseStream, bool closeBaseStream = true)
+        {
+            _token = baseStream;
+            _master = baseStream;
+            _closeBase = closeBaseStream;
+        }
 
+        /// <summary>
+        /// Wait for access to the reader.
+        /// *MUST* always be released correctly
+        /// </summary>
+        [NotNull]
+        public BinaryReader AcquireReader() {
+            var stream = Interlocked.Exchange(ref _token, null);
+            while (stream == null) {
+                Thread.Sleep(0);
+                stream = Interlocked.Exchange(ref _token, null);
+            }
+            return new BinaryReader(stream, Encoding.UTF8, true);
+        }
+
+        /// <summary>
+        /// Wait for access to the reader.
+        /// *MUST* always be released correctly
+        /// </summary>
+        [NotNull]
+        public BinaryWriter AcquireWriter() {
+            var stream = Interlocked.Exchange(ref _token, null);
+            while (stream == null) {
+                Thread.Sleep(0);
+                stream = Interlocked.Exchange(ref _token, null);
+            }
+            return new BinaryWriter(stream, Encoding.UTF8, true);
+        }
+
+        public void Release(BinaryReader reader) {
+            if (reader == null || reader.BaseStream != _master) throw new Exception("Invalid threadlock stream release (reader)");
+            reader.Dispose();
+            _token = _master;
+        }
+
+        public void Release(BinaryWriter writer) {
+            if (writer == null || writer.BaseStream != _master) throw new Exception("Invalid threadlock stream release (writer)");
+            writer.Dispose();
+            _token = _master;
+        }
+
+        public void Close()
+        {
+            _token = null;
+            if (_closeBase) _master?.Close();
+        }
+
+        /// <inheritdoc />
+        public void Dispose()
+        {
+            Close();
+        }
+    }
 
     public static class GuidExtensions {
         /// <summary>
@@ -187,32 +254,38 @@ namespace TinyDB
         public const short FileVersion = 1;           // 2 bytes
 
         /// <summary>
+        /// Storage the first index page (root page). It's fixed on 0 (zero)
+        /// Used to indicate start of binary file 
+        /// <para></para>
         /// Armazena a primeira página que contem o inicio do indice. Valor sempre fixo = 0. Utilizado o inicio da busca binária
-        /// Storage the fist index page (root page). It's fixed on 0 (zero)
         /// </summary>
         public uint IndexRootPageID { get; set; }      // 4 bytes
 
         /// <summary>
-        /// Contem a página que possui espaço disponível para novas inclusões de indices
         /// This last has free nodes to be used
+        /// <para></para>
+        /// Contem a página que possui espaço disponível para novas inclusões de indices
         /// </summary>
         public uint FreeIndexPageID { get; set; }      // 4 bytes
         
         /// <summary>
-        /// Quando há exclusão de dados, a primeira pagina a ficar vazia infora a esse ponteiro que depois vai aproveitar numa proxima inclusão
         /// When a deleted data, this variable point to first page emtpy. I will use to insert the next data page
+        /// <para></para>
+        /// Quando há exclusão de dados, a primeira pagina a ficar vazia infora a esse ponteiro que depois vai aproveitar numa proxima inclusão
         /// </summary>
         public uint FreeDataPageID { get; set; }       // 4 bytes
 
         /// <summary>
-        /// Define, numa exclusão de dados, a ultima pagina excluida. Será utilizado para fazer segmentos continuos de exclusão, ou seja, assim que um segundo arquivo for apagado, o ponteiro inicial dele deve apontar para o ponteiro final do outro
         /// Define, in a deleted data, the last deleted page. It's used to make continuos statments of empty page data
+        /// <para></para>
+        /// Define, numa exclusão de dados, a ultima pagina excluida. Será utilizado para fazer segmentos continuos de exclusão, ou seja, assim que um segundo arquivo for apagado, o ponteiro inicial dele deve apontar para o ponteiro final do outro
         /// </summary>
         public uint LastFreeDataPageID { get; set; }   // 4 bytes
         
         /// <summary>
-        /// Ultima página utilizada pelo FileDB (seja para Indice/Data). É utilizado para quando o arquivo precisa crescer (criar nova pagina)
         /// Last used page on FileDB disk (even index or data page). It's used to grow the file db (create new pages)
+        /// <para></para>
+        /// Ultima página utilizada pelo FileDB (seja para Indice/Data). É utilizado para quando o arquivo precisa crescer (criar nova pagina)
         /// </summary>
         public uint LastPageID { get; set; }           // 4 bytes
 
@@ -246,7 +319,7 @@ namespace TinyDB
             if (indexNode != null)
             {
                 Length = indexNode.FileLength;
-                _currentPage = PageFactory.GetDataPage(indexNode.DataPageID, engine.Reader, false);
+                _currentPage = PageFactory.GetDataPage(indexNode.DataPageID, engine.Storage, false);
                 FileInfo = new EntryInfo(indexNode);
             }
         }
@@ -311,7 +384,7 @@ namespace TinyDB
                     if (_currentPage.NextPageID == uint.MaxValue)
                         _currentPage = null;
                     else
-                        _currentPage = PageFactory.GetDataPage(_currentPage.NextPageID, _engine.Reader, false);
+                        _currentPage = PageFactory.GetDataPage(_currentPage.NextPageID, _engine.Storage, false);
                 }
             }
 
@@ -337,181 +410,245 @@ namespace TinyDB
     internal enum PageType { Data = 1, Index = 2 }
     internal class PageFactory
     {
-        public static void ReadFromFile([NotNull]IndexPage indexPage, [NotNull]BinaryReader reader)
+        [NotNull]private static readonly object _pageLock = new object();
+        public static void ReadFromFile([NotNull]IndexPage indexPage, [NotNull]ThreadlockBinaryStream storage)
         {
-            // Seek the stream to the fist byte on page
-            long initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + (indexPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
-
-            if (reader.ReadByte() != (byte)PageType.Index)
-                throw new Exception($"PageID {indexPage.PageID} is not a Index Page");
-
-            indexPage.NextPageID = reader.ReadUInt32();
-            indexPage.NodeIndex = reader.ReadByte();
-
-            // Seek the stream to end of header data page
-            reader.BaseStream.Seek(initPos + IndexPage.HEADER_SIZE, SeekOrigin.Begin);
-
-            for (int i = 0; i <= indexPage.NodeIndex; i++)
+            lock (_pageLock)
             {
-                var node = indexPage.Nodes[i];
-                if (node == null) continue;
-
-                node.ID = new Guid(reader.ReadBytes(16));
-
-                node.IsDeleted = reader.ReadBoolean();
-
-                if (node.Right != null)
+                var reader = storage.AcquireReader();
+                try
                 {
-                    node.Right.Index = reader.ReadByte();
-                    node.Right.PageID = reader.ReadUInt32();
-                }
-                if (node.Left != null)
-                {
-                    node.Left.Index = reader.ReadByte();
-                    node.Left.PageID = reader.ReadUInt32();
-                }
-                node.DataPageID = reader.ReadUInt32();
+                    // Seek the stream to the fist byte on page
+                    long initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + (indexPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
 
-                node.FileName = Encoding.ASCII.GetString(reader.ReadBytes(IndexNode.FILENAME_SIZE));
-                node.FileLength = reader.ReadUInt32();
+                    if (reader.ReadByte() != (byte)PageType.Index)
+                        throw new Exception($"PageID {indexPage.PageID} is not a Index Page");
+
+                    indexPage.NextPageID = reader.ReadUInt32();
+                    indexPage.NodeIndex = reader.ReadByte();
+
+                    // Seek the stream to end of header data page
+                    reader.BaseStream.Seek(initPos + IndexPage.HEADER_SIZE, SeekOrigin.Begin);
+
+                    for (int i = 0; i <= indexPage.NodeIndex; i++)
+                    {
+                        var node = indexPage.Nodes[i];
+                        if (node == null) continue;
+
+                        node.ID = new Guid(reader.ReadBytes(16));
+
+                        node.IsDeleted = reader.ReadBoolean();
+
+                        if (node.Right != null)
+                        {
+                            node.Right.Index = reader.ReadByte();
+                            node.Right.PageID = reader.ReadUInt32();
+                        }
+                        if (node.Left != null)
+                        {
+                            node.Left.Index = reader.ReadByte();
+                            node.Left.PageID = reader.ReadUInt32();
+                        }
+                        node.DataPageID = reader.ReadUInt32();
+
+                        node.FileName = Encoding.ASCII.GetString(reader.ReadBytes(IndexNode.FILENAME_SIZE));
+                        node.FileLength = reader.ReadUInt32();
+                    }
+                }
+                finally
+                {
+                    storage.Release(reader);
+                }
             }
         }
 
-        public static void WriteToFile([NotNull]IndexPage indexPage, [NotNull]BinaryWriter writer)
+        public static void WriteToFile([NotNull]IndexPage indexPage, [NotNull]ThreadlockBinaryStream storage)
         {
-            // Seek the stream to the fist byte on page
-            long initPos = writer.BaseStream.Seek(Header.HEADER_SIZE + (indexPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
-
-            // Write page header 
-            writer.Write((byte)indexPage.Type);
-            writer.Write(indexPage.NextPageID);
-            writer.Write(indexPage.NodeIndex);
-
-            // Seek the stream to end of header index page
-            writer.BaseStream.Seek(initPos + IndexPage.HEADER_SIZE, SeekOrigin.Begin);
-
-            for (int i = 0; i <= indexPage.NodeIndex; i++)
+            lock (_pageLock)
             {
-                var node = indexPage.Nodes[i];
-                if (node == null) continue;
-
-                writer.Write(node.ID.ToByteArray());
-
-                writer.Write(node.IsDeleted);
-
-                if (node.Right != null)
+                var writer = storage.AcquireWriter();
+                try
                 {
-                    writer.Write(node.Right.Index);
-                    writer.Write(node.Right.PageID);
+                    // Seek the stream to the fist byte on page
+                    long initPos = writer.BaseStream.Seek(Header.HEADER_SIZE + (indexPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
+
+                    // Write page header 
+                    writer.Write((byte)indexPage.Type);
+                    writer.Write(indexPage.NextPageID);
+                    writer.Write(indexPage.NodeIndex);
+
+                    // Seek the stream to end of header index page
+                    writer.BaseStream.Seek(initPos + IndexPage.HEADER_SIZE, SeekOrigin.Begin);
+
+                    for (int i = 0; i <= indexPage.NodeIndex; i++)
+                    {
+                        var node = indexPage.Nodes[i];
+                        if (node == null) continue;
+
+                        writer.Write(node.ID.ToByteArray());
+
+                        writer.Write(node.IsDeleted);
+
+                        if (node.Right != null)
+                        {
+                            writer.Write(node.Right.Index);
+                            writer.Write(node.Right.PageID);
+                        }
+                        if (node.Left != null)
+                        {
+                            writer.Write(node.Left.Index);
+                            writer.Write(node.Left.PageID);
+                        }
+                        writer.Write(node.DataPageID);
+
+                        writer.Write(node.FileName.LimitedByteString(IndexNode.FILENAME_SIZE));
+                        writer.Write(node.FileLength);
+                    }
                 }
-                if (node.Left != null)
+                finally
                 {
-                    writer.Write(node.Left.Index);
-                    writer.Write(node.Left.PageID);
+                    storage.Release(writer);
                 }
-                writer.Write(node.DataPageID);
-
-                writer.Write(node.FileName.LimitedByteString(IndexNode.FILENAME_SIZE));
-                writer.Write(node.FileLength);
-            }
-
-        }
-
-        public static void ReadFromFile([NotNull]DataPage dataPage, [NotNull]BinaryReader reader, bool onlyHeader)
-        {
-            // Seek the stream on first byte from data page
-            long initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
-
-            if (reader.ReadByte() != (byte)PageType.Data)
-                throw new Exception($"PageID {dataPage.PageID} is not a Data Page");
-
-            dataPage.NextPageID = reader.ReadUInt32();
-            dataPage.IsEmpty = reader.ReadBoolean();
-            dataPage.DataBlockLength = reader.ReadInt16();
-
-            // If page is empty or onlyHeader parameter, I don't read data content
-            if (!dataPage.IsEmpty && !onlyHeader)
-            {
-                // Seek the stream at the end of page header
-                reader.BaseStream.Seek(initPos + DataPage.HEADER_SIZE, SeekOrigin.Begin);
-
-                // Read all bytes from page
-                dataPage.SetBlock(reader.ReadBytes(dataPage.DataBlockLength));
             }
         }
 
-        public static void WriteToFile([NotNull]DataPage dataPage, [NotNull]BinaryWriter writer)
+        public static void ReadFromFile([NotNull]DataPage dataPage, [NotNull]ThreadlockBinaryStream storage, bool onlyHeader)
         {
-            // Seek the stream on first byte from data page
-            long initPos = writer.BaseStream.Seek(Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
-
-            // Write data page header
-            writer.Write((byte)dataPage.Type);
-            writer.Write(dataPage.NextPageID);
-            writer.Write(dataPage.IsEmpty);
-            writer.Write(dataPage.DataBlockLength);
-
-            // I will only save data content if the page is not empty
-            if (!dataPage.IsEmpty)
+            lock (_pageLock)
             {
-                // Seek the stream at the end of page header
-                writer.BaseStream.Seek(initPos + DataPage.HEADER_SIZE, SeekOrigin.Begin);
+                var reader = storage.AcquireReader();
+                try
+                {
+                    // Seek the stream on first byte from data page
+                    long initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
 
-                writer.Write(dataPage.DataBlock, 0, dataPage.DataBlockLength);
+                    if (reader.ReadByte() != (byte)PageType.Data)
+                        throw new Exception($"PageID {dataPage.PageID} is not a Data Page");
+
+                    dataPage.NextPageID = reader.ReadUInt32();
+                    dataPage.IsEmpty = reader.ReadBoolean();
+                    dataPage.DataBlockLength = reader.ReadInt16();
+
+                    // If page is empty or onlyHeader parameter, I don't read data content
+                    if (!dataPage.IsEmpty && !onlyHeader)
+                    {
+                        // Seek the stream at the end of page header
+                        reader.BaseStream.Seek(initPos + DataPage.HEADER_SIZE, SeekOrigin.Begin);
+
+                        // Read all bytes from page
+                        dataPage.SetBlock(reader.ReadBytes(dataPage.DataBlockLength));
+                    }
+                }
+                finally
+                {
+                    storage.Release(reader);
+                }
+            }
+        }
+
+        public static void WriteToFile([NotNull]DataPage dataPage, [NotNull]ThreadlockBinaryStream storage)
+        {
+            lock (_pageLock)
+            {
+                var writer = storage.AcquireWriter();
+                try
+                {
+                    // Seek the stream on first byte from data page
+                    long initPos = writer.BaseStream.Seek(Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
+
+                    // Write data page header
+                    writer.Write((byte)dataPage.Type);
+                    writer.Write(dataPage.NextPageID);
+                    writer.Write(dataPage.IsEmpty);
+                    writer.Write(dataPage.DataBlockLength);
+
+                    // I will only save data content if the page is not empty
+                    if (!dataPage.IsEmpty)
+                    {
+                        // Seek the stream at the end of page header
+                        writer.BaseStream.Seek(initPos + DataPage.HEADER_SIZE, SeekOrigin.Begin);
+
+                        writer.Write(dataPage.DataBlock, 0, dataPage.DataBlockLength);
+                    }
+                }
+                finally
+                {
+                    storage.Release(writer);
+                }
             }
         }
 
         [NotNull]
-        public static IndexPage GetIndexPage(uint pageID, [NotNull]BinaryReader reader)
+        public static IndexPage GetIndexPage(uint pageID, [NotNull]ThreadlockBinaryStream reader)
         {
             var indexPage = new IndexPage(pageID);
             ReadFromFile(indexPage, reader);
             return indexPage;
         }
 
-        [NotNull]public static DataPage GetDataPage(uint pageID, [NotNull]BinaryReader reader, bool onlyHeader)
+        [NotNull]public static DataPage GetDataPage(uint pageID, [NotNull]ThreadlockBinaryStream reader, bool onlyHeader)
         {
             var dataPage = new DataPage(pageID);
             ReadFromFile(dataPage, reader, onlyHeader);
             return dataPage;
         }
 
-        public static BasePage GetBasePage(uint pageID, [NotNull]BinaryReader reader)
+        public static BasePage GetBasePage(uint pageID, [NotNull]ThreadlockBinaryStream storage)
         {
-            // Seek the stream at begin of page
-            reader.BaseStream.Seek(Header.HEADER_SIZE + (pageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
+            lock (_pageLock)
+            {
+                var pageType = ReadPageType(pageID, storage);
+                return pageType == (byte)PageType.Index
+                    ? (BasePage)GetIndexPage(pageID, storage)
+                    : GetDataPage(pageID, storage, true);
+            }
+        }
 
-            return reader.ReadByte() == (byte) PageType.Index
-                ? (BasePage) GetIndexPage(pageID, reader)
-                : GetDataPage(pageID, reader, true);
+        private static byte ReadPageType(uint pageID, [NotNull]ThreadlockBinaryStream storage)
+        {
+            byte pageType;
+            var reader = storage.AcquireReader();
+            try
+            {
+                reader.BaseStream.Seek(Header.HEADER_SIZE + (pageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
+                pageType = reader.ReadByte();
+            }
+            finally
+            {
+                storage.Release(reader);
+            }
+
+            return pageType;
         }
     }
 
-    
+
     internal delegate void ReleasePageIndexFromCache(IndexPage page);
 
     internal class CacheIndexPage
     {
         public const int CACHE_SIZE = 200;
+        [NotNull]private static readonly object _cacheLock = new object();
 
-        [NotNull]private readonly BinaryReader _reader;
-        [NotNull]private readonly BinaryWriter _writer;
+        [NotNull]private readonly ThreadlockBinaryStream _storage;
         [NotNull]private readonly Dictionary<uint, IndexPage> _cache;
         private readonly uint _rootPageID;
 
-        public CacheIndexPage(BinaryReader reader, BinaryWriter writer, uint rootPageID)
+        public CacheIndexPage(ThreadlockBinaryStream storage, uint rootPageID)
         {
-            _reader = reader ?? throw new ArgumentNullException(nameof(reader));
-            _writer = writer ?? throw new ArgumentNullException(nameof(writer));
+            _storage = storage ?? throw new ArgumentNullException(nameof(storage)); 
             _cache = new Dictionary<uint,IndexPage>();
             _rootPageID = rootPageID;
         }
 
         [NotNull]public IndexPage GetPage(uint pageID)
         {
-            if (_cache.ContainsKey(pageID)) return _cache[pageID] ?? throw new InvalidOperationException("Thread race in page cache");
+            lock (_cacheLock)
+            {
+                if (_cache.ContainsKey(pageID)) return _cache[pageID] ?? throw new InvalidOperationException("Thread race in page cache");
+            }
 
-            var indexPage = PageFactory.GetIndexPage(pageID, _reader);
+            var indexPage = PageFactory.GetIndexPage(pageID, _storage);
             
             AddPage(indexPage, false);
 
@@ -520,38 +657,43 @@ namespace TinyDB
         
         public void AddPage([NotNull]IndexPage indexPage, bool markAsDirty)
         {
-            if(!_cache.ContainsKey(indexPage.PageID))
+            lock (_cacheLock)
             {
-                if(_cache.Count >= CACHE_SIZE)
+                if (!_cache.ContainsKey(indexPage.PageID))
                 {
-                    // Remove first page that is not the root page (because I use too much)
-                    var pageToRemove = _cache.FirstOrDefault(x => x.Key != _rootPageID);
-                    if (pageToRemove.Value == null) throw new Exception("Could not find a non-root page");
-
-                    if (pageToRemove.Value.IsDirty)
+                    if (_cache.Count >= CACHE_SIZE)
                     {
-                        PageFactory.WriteToFile(pageToRemove.Value, _writer);
-                        pageToRemove.Value.IsDirty = false;
+                        // Remove first page that is not the root page (because I use too much)
+                        var pageToRemove = _cache.FirstOrDefault(x => x.Key != _rootPageID);
+                        if (pageToRemove.Value == null) throw new Exception("Could not find a non-root page");
+
+                        if (pageToRemove.Value.IsDirty)
+                        {
+                            PageFactory.WriteToFile(pageToRemove.Value, _storage);
+                            pageToRemove.Value.IsDirty = false;
+                        }
+
+                        _cache.Remove(pageToRemove.Key);
                     }
 
-                    _cache.Remove(pageToRemove.Key);
+                    _cache.Add(indexPage.PageID, indexPage);
                 }
 
-                _cache.Add(indexPage.PageID, indexPage);
+                if (markAsDirty) indexPage.IsDirty = true;
             }
-            
-            if(markAsDirty) indexPage.IsDirty = true;
         }
 
         public void PersistPages()
         {
             // Check which pages is dirty and need to saved on disk 
-            var pagesToPersist = _cache.Values.Where(x => x?.IsDirty == true).ToArray();
+            IndexPage[] pagesToPersist;
+
+            lock (_cacheLock) { pagesToPersist = _cache.Values.Where(x => x?.IsDirty == true).ToArray(); }
             if (pagesToPersist.Length <= 0) return;
 
             foreach (var indexPage in pagesToPersist)
             {
-                PageFactory.WriteToFile(indexPage, _writer);
+                PageFactory.WriteToFile(indexPage, _storage);
                 indexPage.IsDirty = false;
             }
         }
@@ -760,97 +902,107 @@ namespace TinyDB
     
     internal class DataFactory
     {
+        [NotNull] private static readonly object _pageLock = new object();
+
         public static uint GetStartDataPageID([NotNull]Engine engine)
         {
-            if (engine.Header.FreeDataPageID != uint.MaxValue) // I have free page inside the disk file. Use it
+            lock (_pageLock)
             {
-                // Take the first free data page
-                var startPage = PageFactory.GetDataPage(engine.Header.FreeDataPageID, engine.Reader, true);
+                if (engine.Header.FreeDataPageID != uint.MaxValue) // I have free page inside the disk file. Use it
+                {
+                    // Take the first free data page
+                    var startPage = PageFactory.GetDataPage(engine.Header.FreeDataPageID, engine.Storage, true);
 
-                engine.Header.FreeDataPageID = startPage.NextPageID; // and point the free page to new free one
+                    engine.Header.FreeDataPageID = startPage.NextPageID; // and point the free page to new free one
 
-                // If the next page is MAX, fix too LastFreeData
+                    // If the next page is MAX, fix LastFreeData too
 
-                if(engine.Header.FreeDataPageID == uint.MaxValue)
-                    engine.Header.LastFreeDataPageID = uint.MaxValue;
-                
-                return startPage.PageID;
+                    if (engine.Header.FreeDataPageID == uint.MaxValue)
+                        engine.Header.LastFreeDataPageID = uint.MaxValue;
+
+                    return startPage.PageID;
+                }
+                // Don't have free data pages, create new one.
+                engine.Header.LastPageID++;
+                return engine.Header.LastPageID;
             }
-            // Don't have free data pages, create new one.
-            engine.Header.LastPageID++;
-            return engine.Header.LastPageID;
         }
 
         // Take a new data page on sequence and update the last
         [NotNull]public static DataPage GetNewDataPage([NotNull]DataPage basePage, [NotNull]Engine engine)
         {
-            if (basePage.NextPageID != uint.MaxValue)
+            lock (_pageLock)
             {
-                PageFactory.WriteToFile(basePage, engine.Writer); // Write last page on disk
+                if (basePage.NextPageID != uint.MaxValue)
+                {
+                    PageFactory.WriteToFile(basePage, engine.Storage); // Write last page on disk
 
-                var dataPage = PageFactory.GetDataPage(basePage.NextPageID, engine.Reader, false);
+                    var dataPage = PageFactory.GetDataPage(basePage.NextPageID, engine.Storage, false);
 
-                engine.Header.FreeDataPageID = dataPage.NextPageID;
+                    engine.Header.FreeDataPageID = dataPage.NextPageID;
 
-                if (engine.Header.FreeDataPageID == uint.MaxValue)
-                    engine.Header.LastFreeDataPageID = uint.MaxValue;
+                    if (engine.Header.FreeDataPageID == uint.MaxValue)
+                        engine.Header.LastFreeDataPageID = uint.MaxValue;
 
-                return dataPage;
+                    return dataPage;
+                }
+
+                var pageID = ++engine.Header.LastPageID;
+                var newPage = new DataPage(pageID);
+                basePage.NextPageID = newPage.PageID;
+                PageFactory.WriteToFile(basePage, engine.Storage); // Write last page on disk
+                return newPage;
             }
-
-            var pageID = ++engine.Header.LastPageID;
-            var newPage = new DataPage(pageID);
-            basePage.NextPageID = newPage.PageID;
-            PageFactory.WriteToFile(basePage, engine.Writer); // Write last page on disk
-            return newPage;
         }
 
         public static void InsertFile([NotNull]IndexNode node, [NotNull]Stream stream, [NotNull]Engine engine)
         {
-            DataPage dataPage = null;
-            var buffer = new byte[DataPage.DATA_PER_PAGE];
-            uint totalBytes = 0;
-
-            int read;
-            int dataPerPage = (int)DataPage.DATA_PER_PAGE;
-
-            while ((read = stream.Read(buffer, 0, dataPerPage)) > 0)
+            lock (_pageLock)
             {
-                totalBytes += (uint)read;
+                DataPage dataPage = null;
+                var buffer = new byte[DataPage.DATA_PER_PAGE];
+                uint totalBytes = 0;
 
-                if (dataPage == null) // First read
-                    dataPage = engine.GetPageData(node.DataPageID);
-                else
-                    dataPage = GetNewDataPage(dataPage, engine);
+                int read;
+                int dataPerPage = (int)DataPage.DATA_PER_PAGE;
+
+                while ((read = stream.Read(buffer, 0, dataPerPage)) > 0)
+                {
+                    totalBytes += (uint)read;
+
+                    if (dataPage == null) // First read
+                        dataPage = engine.GetPageData(node.DataPageID);
+                    else
+                        dataPage = GetNewDataPage(dataPage, engine);
+
+                    if (dataPage == null) throw new Exception("Data page was null");
+
+                    if (!dataPage.IsEmpty) throw new Exception($"Page {dataPage.PageID} is not empty");
+
+                    Array.Copy(buffer, dataPage.DataBlock, read);
+                    dataPage.IsEmpty = false;
+                    dataPage.DataBlockLength = (short)read;
+                }
 
                 if (dataPage == null) throw new Exception("Data page was null");
+                // If the last page point to another one, i need to fix that
+                if (dataPage.NextPageID != uint.MaxValue)
+                {
+                    engine.Header.FreeDataPageID = dataPage.NextPageID;
+                    dataPage.NextPageID = uint.MaxValue;
+                }
 
-                if (!dataPage.IsEmpty) throw new Exception($"Page {dataPage.PageID} is not empty");
+                // Save the last page on disk
+                PageFactory.WriteToFile(dataPage, engine.Storage);
 
-                Array.Copy(buffer, dataPage.DataBlock, read);
-                dataPage.IsEmpty = false;
-                dataPage.DataBlockLength = (short)read;
+                // Save on node index that file length
+                node.FileLength = totalBytes;
             }
-
-            if (dataPage == null) throw new Exception("Data page was null");
-            // If the last page point to another one, i need to fix that
-            if (dataPage.NextPageID != uint.MaxValue)
-            {
-                engine.Header.FreeDataPageID = dataPage.NextPageID;
-                dataPage.NextPageID = uint.MaxValue;
-            }
-
-            // Salve the last page on disk
-            PageFactory.WriteToFile(dataPage, engine.Writer);
-
-            // Save on node index that file length
-            node.FileLength = totalBytes;
-
         }
 
         public static void ReadFile([NotNull]IndexNode node, [NotNull]Stream stream, [NotNull]Engine engine)
         {
-            var dataPage = PageFactory.GetDataPage(node.DataPageID, engine.Reader, false);
+            var dataPage = PageFactory.GetDataPage(node.DataPageID, engine.Storage, false);
 
             while (dataPage != null)
             {
@@ -859,57 +1011,60 @@ namespace TinyDB
                 if (dataPage.NextPageID == uint.MaxValue)
                     dataPage = null;
                 else
-                    dataPage = PageFactory.GetDataPage(dataPage.NextPageID, engine.Reader, false);
+                    dataPage = PageFactory.GetDataPage(dataPage.NextPageID, engine.Storage, false);
             }
 
         }
 
         public static void MarkAsEmpty(uint firstPageID, [NotNull]Engine engine)
         {
-            var dataPage = PageFactory.GetDataPage(firstPageID, engine.Reader, true);
-            uint lastPageID = uint.MaxValue;
-            var cont = true;
-
-            while (cont)
+            lock (_pageLock)
             {
-                dataPage.IsEmpty = true;
+                var dataPage = PageFactory.GetDataPage(firstPageID, engine.Storage, true);
+                uint lastPageID = uint.MaxValue;
+                var cont = true;
 
-                PageFactory.WriteToFile(dataPage, engine.Writer);
-
-                if (dataPage.NextPageID != uint.MaxValue)
+                while (cont)
                 {
-                    lastPageID = dataPage.NextPageID;
-                    dataPage = PageFactory.GetDataPage(lastPageID, engine.Reader, true);
+                    dataPage.IsEmpty = true;
+
+                    PageFactory.WriteToFile(dataPage, engine.Storage);
+
+                    if (dataPage.NextPageID != uint.MaxValue)
+                    {
+                        lastPageID = dataPage.NextPageID;
+                        dataPage = PageFactory.GetDataPage(lastPageID, engine.Storage, true);
+                    }
+                    else
+                    {
+                        cont = false;
+                    }
+                }
+
+                // Fix header to correct pointer
+                if (engine.Header.FreeDataPageID == uint.MaxValue) // No free pages
+                {
+                    engine.Header.FreeDataPageID = firstPageID;
+                    engine.Header.LastFreeDataPageID = lastPageID == uint.MaxValue ? firstPageID : lastPageID;
                 }
                 else
                 {
-                    cont = false;
+                    // Take the last statment available
+                    var lastPage = PageFactory.GetDataPage(engine.Header.LastFreeDataPageID, engine.Storage, true);
+
+                    // Point this last statent to first of next one
+                    if (lastPage.NextPageID != uint.MaxValue || !lastPage.IsEmpty) // This is never to happend!!
+                        throw new Exception("The page is not empty");
+
+                    // Update this last page to first new empty page
+                    lastPage.NextPageID = firstPageID;
+
+                    // Save on disk this update
+                    PageFactory.WriteToFile(lastPage, engine.Storage);
+
+                    // Point header to the new empty page
+                    engine.Header.LastFreeDataPageID = lastPageID == uint.MaxValue ? firstPageID : lastPageID;
                 }
-            }
-
-            // Fix header to correct pointer
-            if (engine.Header.FreeDataPageID == uint.MaxValue) // No free pages
-            {
-                engine.Header.FreeDataPageID = firstPageID;
-                engine.Header.LastFreeDataPageID = lastPageID == uint.MaxValue ? firstPageID : lastPageID;
-            }
-            else
-            {
-                // Take the last statment available
-                var lastPage = PageFactory.GetDataPage(engine.Header.LastFreeDataPageID, engine.Reader, true);
-
-                // Point this last statent to first of next one
-                if (lastPage.NextPageID != uint.MaxValue || !lastPage.IsEmpty) // This is never to happend!!
-                    throw new Exception("The page is not empty");
-
-                // Update this last page to first new empty page
-                lastPage.NextPageID = firstPageID;
-
-                // Save on disk this update
-                PageFactory.WriteToFile(lastPage, engine.Writer);
-
-                // Point header to the new empty page
-                engine.Header.LastFreeDataPageID = lastPageID == uint.MaxValue ? firstPageID : lastPageID;
             }
         }
 
@@ -917,44 +1072,63 @@ namespace TinyDB
 
     internal class HeaderFactory
     {
-        public static void ReadFromFile([NotNull]Header header, [NotNull]BinaryReader reader)
+        public static void ReadFromFile([NotNull]Header header, [NotNull]ThreadlockBinaryStream storage)
         {
-            // Seek the stream on 0 position to read header
-            reader.BaseStream.Seek(0, SeekOrigin.Begin);
+            var reader = storage.AcquireReader();
+            try
+            {
+                // Seek the stream on 0 position to read header
+                reader.BaseStream.Seek(0, SeekOrigin.Begin);
 
-            // Make same validation on header file
-            if (Encoding.ASCII.GetString(reader.ReadBytes(Header.FileID.Length)) != Header.FileID)
-                throw new Exception("The file is not a valid storage archive");
+                // Make same validation on header file
+                if (Encoding.ASCII.GetString(reader.ReadBytes(Header.FileID.Length)) != Header.FileID)
+                    throw new Exception("The file is not a valid storage archive");
 
-            if (reader.ReadInt16() != Header.FileVersion)
-                throw new Exception("The archive version is not valid");
+                if (reader.ReadInt16() != Header.FileVersion)
+                    throw new Exception("The archive version is not valid");
 
-            header.IndexRootPageID = reader.ReadUInt32();
-            header.FreeIndexPageID = reader.ReadUInt32();
-            header.FreeDataPageID = reader.ReadUInt32();
-            header.LastFreeDataPageID = reader.ReadUInt32();
-            header.LastPageID = reader.ReadUInt32();
-            header.IsDirty = false;
+                header.IndexRootPageID = reader.ReadUInt32();
+                header.FreeIndexPageID = reader.ReadUInt32();
+                header.FreeDataPageID = reader.ReadUInt32();
+                header.LastFreeDataPageID = reader.ReadUInt32();
+                header.LastPageID = reader.ReadUInt32();
+                header.IsDirty = false;
+            }
+            finally
+            {
+                storage.Release(reader);
+            }
         }
 
-        public static void WriteToFile([NotNull]Header header, [NotNull]BinaryWriter writer)
+        public static void WriteToFile([NotNull]Header header, [NotNull]ThreadlockBinaryStream storage)
         {
-            // Seek the stream on 0 position to save header
-            writer.BaseStream.Seek(0, SeekOrigin.Begin);
+            var writer = storage.AcquireWriter();
+            try
+            {
+                // Seek the stream on 0 position to save header
+                writer.BaseStream.Seek(0, SeekOrigin.Begin);
 
-            writer.Write(Header.FileID.LimitedByteString(Header.FileID.Length));
-            writer.Write(Header.FileVersion);
+                writer.Write(Header.FileID.LimitedByteString(Header.FileID.Length));
+                writer.Write(Header.FileVersion);
 
-            writer.Write(header.IndexRootPageID);
-            writer.Write(header.FreeIndexPageID);
-            writer.Write(header.FreeDataPageID);
-            writer.Write(header.LastFreeDataPageID);
-            writer.Write(header.LastPageID);
+                writer.Write(header.IndexRootPageID);
+                writer.Write(header.FreeIndexPageID);
+                writer.Write(header.FreeDataPageID);
+                writer.Write(header.LastFreeDataPageID);
+                writer.Write(header.LastPageID);
+            }
+            finally
+            {
+                storage.Release(writer);
+            }
         }
 
     }
- internal class IndexFactory
+    internal class IndexFactory
     {
+        [NotNull]private static readonly object _indexLock = new object();
+        private static volatile bool _writeInProgress = false;
+
         public static IndexNode GetRootIndexNode([NotNull]Engine engine)
         {
             var rootIndexPage = engine.CacheIndexPage.GetPage(engine.Header.IndexRootPageID);
@@ -963,23 +1137,35 @@ namespace TinyDB
 
         public static IndexNode BinaryInsert([NotNull]EntryInfo target, [NotNull]IndexNode baseNode, [NotNull]Engine engine)
         {
-            var dif = baseNode.ID.CompareTo(target.ID);
-            if (baseNode.Right == null || baseNode.Left == null) throw new Exception("Index node structure is broken");
-
-            switch (dif)
+            _writeInProgress = true;
+            try
             {
-                // > Greater (Right)
-                case 1:
-                    return baseNode.Right.IsEmpty
-                        ? BinaryInsertNode(baseNode.Right, baseNode, target, engine)
-                        : BinaryInsert(target, GetChildIndexNode(baseNode.Right, engine), engine);
-                // < Less (Left)
-                case -1:
-                    return baseNode.Left.IsEmpty
-                        ? BinaryInsertNode(baseNode.Left, baseNode, target, engine)
-                        : BinaryInsert(target, GetChildIndexNode(baseNode.Left, engine), engine);
-                default:
-                    throw new Exception("GUID collision.");
+                lock (_indexLock)
+                {
+
+                    var dif = baseNode.ID.CompareTo(target.ID);
+                    if (baseNode.Right == null || baseNode.Left == null) throw new Exception("Index node structure is broken");
+
+                    switch (dif)
+                    {
+                        // > Greater (Right)
+                        case 1:
+                            return baseNode.Right.IsEmpty
+                                ? BinaryInsertNode(baseNode.Right, baseNode, target, engine)
+                                : BinaryInsert(target, GetChildIndexNode(baseNode.Right, engine), engine);
+                        // < Less (Left)
+                        case -1:
+                            return baseNode.Left.IsEmpty
+                                ? BinaryInsertNode(baseNode.Left, baseNode, target, engine)
+                                : BinaryInsert(target, GetChildIndexNode(baseNode.Left, engine), engine);
+                        default:
+                            throw new Exception("GUID collision.");
+                    }
+                }
+            }
+            finally
+            {
+                _writeInProgress = false;
             }
         }
 
@@ -991,29 +1177,41 @@ namespace TinyDB
 
         private static IndexNode BinaryInsertNode([NotNull]IndexLink baseLink, [NotNull]IndexNode baseNode, [NotNull]EntryInfo entry, [NotNull]Engine engine)
         {
-            // Insert new node
-            var pageIndex = engine.GetFreeIndexPage();
-            var newNode = pageIndex?.Nodes[pageIndex.NodeIndex];
-            if (newNode == null) throw new Exception("Failed to find new node during BinaryInsertNode");
-            if (baseNode.IndexPage == null) throw new Exception("Invalid page structure in BinaryInsertNode");
+            try
+            {
+                _writeInProgress = true;
+                lock (_indexLock)
+                {
+                    // Insert new node
+                    var pageIndex = engine.GetFreeIndexPage();
+                    var newNode = pageIndex?.Nodes[pageIndex.NodeIndex];
+                    if (newNode == null) throw new Exception("Failed to find new node during BinaryInsertNode");
+                    if (baseNode.IndexPage == null) throw new Exception("Invalid page structure in BinaryInsertNode");
 
 
-            baseLink.PageID = pageIndex.PageID;
-            baseLink.Index = pageIndex.NodeIndex;
+                    baseLink.PageID = pageIndex.PageID;
+                    baseLink.Index = pageIndex.NodeIndex;
 
-            newNode.UpdateFromEntry(entry);
-            newNode.DataPageID = DataFactory.GetStartDataPageID(engine);
+                    newNode.UpdateFromEntry(entry);
+                    newNode.DataPageID = DataFactory.GetStartDataPageID(engine);
 
-            if (pageIndex.PageID != baseNode.IndexPage.PageID) engine.CacheIndexPage.AddPage(baseNode.IndexPage, true);
+                    if (pageIndex.PageID != baseNode.IndexPage.PageID) engine.CacheIndexPage.AddPage(baseNode.IndexPage, true);
 
-            engine.CacheIndexPage.AddPage(pageIndex, true);
+                    engine.CacheIndexPage.AddPage(pageIndex, true);
 
-            return newNode;
+                    return newNode;
+                }
+            }
+            finally
+            {
+                _writeInProgress = false;
+            }
         }
 
         [CanBeNull]
         public static IndexNode BinarySearch(Guid target, [NotNull]IndexNode baseNode, [NotNull]Engine engine)
         {
+            while (_writeInProgress) { Thread.Sleep(0); }
             var dif = baseNode.ID.CompareTo(target);
             if (baseNode.Right == null || baseNode.Left == null) throw new Exception("Incomplete structure in BinarySearch");
 
@@ -1068,23 +1266,26 @@ namespace TinyDB
 
         internal class Engine : IDisposable
     {
-        [NotNull]public BinaryReader Reader { get; }
-        [NotNull]public BinaryWriter Writer { get; }
+        //[NotNull]public BinaryReader Reader { get; }
+        //[NotNull]public BinaryWriter Writer { get; }
+        [NotNull] public ThreadlockBinaryStream Storage { get; }
         [NotNull]public CacheIndexPage CacheIndexPage { get; } // Used for cache index pages.
         [NotNull]public Header Header { get; }
 
         public Engine([NotNull]Stream stream)
         {
             if (!stream.CanWrite) throw new Exception("A read/write stream is required");
-            Reader = new BinaryReader(stream);
+        //    Reader = new BinaryReader(stream);
 
-            Writer = new BinaryWriter(stream);
-            Writer.Lock(Header.LOCKER_POS, 1);
+          //  Writer = new BinaryWriter(stream);
+            //Writer.Lock(Header.LOCKER_POS, 1);
+
+            Storage = new ThreadlockBinaryStream(stream);
 
             Header = new Header();
-            HeaderFactory.ReadFromFile(Header, Reader);
+            HeaderFactory.ReadFromFile(Header, Storage);
 
-            CacheIndexPage = new CacheIndexPage(Reader, Writer, Header.IndexRootPageID);
+            CacheIndexPage = new CacheIndexPage(Storage, Header.IndexRootPageID);
         }
 
         public IndexPage GetFreeIndexPage()
@@ -1118,13 +1319,11 @@ namespace TinyDB
                 var dataPage = new DataPage(pageID);
                 return dataPage;
             }
-            else
-            {
-                return PageFactory.GetDataPage(pageID, Reader, false);
-            }
+
+            return PageFactory.GetDataPage(pageID, Storage, false);
         }
 
-        // Implement file physic storage
+        // Implement file physicam storage
         public void Write([NotNull]EntryInfo entry, [NotNull]Stream stream)
         {
             // Take the first index page
@@ -1243,7 +1442,7 @@ namespace TinyDB
             // Check if header is dirty and save to disk
             if (Header.IsDirty)
             {
-                HeaderFactory.WriteToFile(Header, Writer);
+                HeaderFactory.WriteToFile(Header, Storage);
                 Header.IsDirty = false;
             }
 
@@ -1253,14 +1452,15 @@ namespace TinyDB
 
         public void Dispose()
         {
+            Storage.Close();
             // Unlock the file, prevent concurrence writing
-            Writer.Unlock(Header.LOCKER_POS, 1);
+            /*Writer.Unlock(Header.LOCKER_POS, 1);
             Writer.Close();
 
-            Reader.Close();
+            Reader.Close();*/
         }
 
-        public static void CreateEmptyFile([NotNull]BinaryWriter writer)
+        public static void CreateEmptyFile([NotNull]Stream storageStream)
         {
             // Create new header instance
             var header = new Header();
@@ -1271,23 +1471,25 @@ namespace TinyDB
             header.LastFreeDataPageID = uint.MaxValue;
             header.LastPageID = 0;
 
-            HeaderFactory.WriteToFile(header, writer);
+            using (var storage = new ThreadlockBinaryStream(storageStream, closeBaseStream: false))
+            {
+                HeaderFactory.WriteToFile(header, storage);
 
-            // Create a first fixed index page
-            var pageIndex = new IndexPage(0) {NodeIndex = 0, NextPageID = uint.MaxValue};
+                // Create a first fixed index page
+                var pageIndex = new IndexPage(0) { NodeIndex = 0, NextPageID = uint.MaxValue };
 
-            // Create first fixed index node, with fixed middle guid
-            var indexNode = pageIndex.Nodes[0];
-            if (indexNode == null) throw new Exception("Failed to create primary index node");
-            indexNode.ID = new Guid(new byte[] { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 });
-            indexNode.IsDeleted = true;
-            indexNode.Right = new IndexLink();
-            indexNode.Left = new IndexLink();
-            indexNode.DataPageID = uint.MaxValue;
-            indexNode.FileName = string.Empty;
+                // Create first fixed index node, with fixed middle guid
+                var indexNode = pageIndex.Nodes[0];
+                if (indexNode == null) throw new Exception("Failed to create primary index node");
+                indexNode.ID = new Guid(new byte[] { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 });
+                indexNode.IsDeleted = true;
+                indexNode.Right = new IndexLink();
+                indexNode.Left = new IndexLink();
+                indexNode.DataPageID = uint.MaxValue;
+                indexNode.FileName = string.Empty;
 
-            PageFactory.WriteToFile(pageIndex, writer);
-
+                PageFactory.WriteToFile(pageIndex, storage);
+            }
         }
 
     }
