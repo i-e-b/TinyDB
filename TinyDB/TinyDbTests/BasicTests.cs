@@ -295,6 +295,7 @@ namespace TinyDbTests
                         {
                             var data = MakeSourceStream("Data for item " + j);
                             subject.Store($"file_{j}", data);
+                            //Console.Write($"; {j} ok .");
                         }
                         catch (Exception ex) {
                             Console.WriteLine($"Item {j} failed with: " + ex);
