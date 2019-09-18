@@ -1075,6 +1075,7 @@ namespace TinyDB
                             Array.Copy(buffer, dataPage.DataBlock, read);
                             dataPage.IsEmpty = false;
                             dataPage.DataBlockLength = (short)read;
+                            PageFactory.WriteToFile(dataPage, engine.Storage);
                         }
 
                         // If the last page point to another one, i need to fix that
