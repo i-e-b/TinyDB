@@ -121,7 +121,24 @@ namespace TinyDbTests
         [Test]
         public void can_read_from_a_stream () 
         {
-            Assert.Fail("NYI");
+            var source = new PathTrie();
+
+            source.Add("my/path/1", "value1");
+            source.Add("my/path/2", "value2");
+            source.Add("my/other/path", "value3");
+            source.Add("my/other/path/longer", "value4");
+
+            var target = new PathTrie();
+            using (var ms = new MemoryStream()) {
+                source.WriteTo(ms);
+                ms.Seek(0, SeekOrigin.Begin);
+                target.Import(ms);
+            }
+
+            Assert.That(target.Get("my/path/1"), Is.EqualTo("value1"));
+            Assert.That(target.Get("my/path/2"), Is.EqualTo("value2"));
+            Assert.That(target.Get("my/other/path"), Is.EqualTo("value3"));
+            Assert.That(target.Get("my/other/path/longer"), Is.EqualTo("value4"));
         }
     }
 
@@ -392,15 +409,16 @@ namespace TinyDbTests
         const byte HAS_LEFT = 1 << 1;
         const byte HAS_RIGHT = 1 << 2;
         const byte HAS_DATA = 1 << 3;
+        
+        const long INDEX_MARKER = 0xFACEFEED; // 32 bits of zero, then the magic number
+        const long DATA_MARKER  = 0xBACCFACE;
+        const long END_MARKER   = 0xDEADBEEF;
 
         /// <summary>
         /// Write a serialised form to the stream at its current position
         /// </summary>
         public void WriteTo(Stream stream)
         {
-            const long INDEX_MARKER = 0xFACEFEED; // 32 bits of zero, then the magic number
-            const long DATA_MARKER  = 0xBACCFACE;
-
             if (stream == null) return;
             using (var w = new BinaryWriter(stream, Encoding.UTF8, true))
             {
@@ -411,7 +429,47 @@ namespace TinyDbTests
                 w.Write(DATA_MARKER);
                 w.Write(_entries.Count);
                 foreach (var entry in _entries) { WriteDataEntry(entry, w); }
+                w.Write(END_MARKER);
             }
+        }
+        
+        /// <summary>
+        /// Read a stream (previously written by `WriteTo`) from its current position
+        /// into a new index. Will throw an exception if the data is not consistent and complete.
+        /// </summary>
+        /// <param name="stream"></param>
+        public static PathTrie ReadFrom(Stream stream)
+        {
+            if (stream == null) return null;
+            var result = new PathTrie();
+            using (var r = new BinaryReader(stream, Encoding.UTF8, true))
+            {
+                if (r.ReadInt64() != INDEX_MARKER) throw new Exception("Input stream missing index marker");
+                var nodeCount = r.ReadInt32();
+                if (nodeCount < 0) throw new Exception("Input stream node count invalid");
+
+                for (int i = 0; i < nodeCount; i++)
+                {
+                    result._nodes.Add(ReadIndexNode(r));
+                }
+                
+                if (r.ReadInt64() != DATA_MARKER) throw new Exception("Input stream missing data marker");
+                var entryCount = r.ReadInt32();
+                if (entryCount < 0) throw new Exception("Input stream node count invalid");
+                
+                for (int i = 0; i < entryCount; i++)
+                {
+                    result._entries.Add(ReadDataEntry(r));
+                }
+                
+                if (r.ReadInt64() != END_MARKER) throw new Exception("Input stream missing end marker");
+            }
+            return result;
+        }
+
+        private static string ReadDataEntry(BinaryReader r)
+        {
+            return TODO_IMPLEMENT_ME;
         }
 
         private void WriteDataEntry(string data, BinaryWriter w)
@@ -423,6 +481,13 @@ namespace TinyDbTests
             var bytes = Encoding.UTF8.GetBytes(data); // we do this to ensure an exact byte count
             w.Write(bytes.Length);
             w.Write(bytes);
+        }
+
+        
+
+        private static Node ReadIndexNode(BinaryReader r)
+        {
+            return TODO_IMPLEMENT_ME;
         }
 
         private static void WriteIndexNode(Node node, BinaryWriter w)
