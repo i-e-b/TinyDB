@@ -49,6 +49,7 @@
   <ItemGroup>
     <Compile Include="BasicTests.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="PathIndexingTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
