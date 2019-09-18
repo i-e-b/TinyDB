@@ -91,9 +91,13 @@ namespace TinyDB
         public EntryInfo Store([NotNull]string fileName, [NotNull]Stream input)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
-            var entry = new EntryInfo(fileName);
-            _engine.Write(entry, input);
-            return entry;
+
+            lock (_engine) // <-- test
+            {
+                var entry = new EntryInfo(fileName);
+                _engine.Write(entry, input);
+                return entry;
+            }
         }
 
         /// <summary>
@@ -438,7 +442,7 @@ namespace TinyDB
     internal class PageFactory
     {
         [NotNull]private static readonly object _pageLock = new object();
-        public static void ReadFromFile([NotNull]IndexPage indexPage, [NotNull]ThreadlockBinaryStream storage)
+        public static void ReadIndexPageFromFile([NotNull]IndexPage indexPage, [NotNull]ThreadlockBinaryStream storage)
         {
             lock (_pageLock)
             {
@@ -564,7 +568,7 @@ namespace TinyDB
             }
             }
 
-        public static bool ReadFromFile([NotNull]DataPage dataPage, [NotNull]ThreadlockBinaryStream storage, bool onlyHeader)
+        public static bool ReadDataPageFromFile([NotNull]DataPage dataPage, [NotNull]ThreadlockBinaryStream storage, bool onlyHeader)
         {
             lock (_pageLock)
             {
@@ -575,13 +579,14 @@ namespace TinyDB
                     {
                         // Seek the stream on first byte from data page
                         var target = Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE);
+                        
                         var initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
 
                         if (target != initPos) throw new Exception("Unexpected end of file");
 
                         // TODO: if file run out, retry or grow?
-                        if (reader.BaseStream.Position >= reader.BaseStream.Length) return false;
-                            //throw new Exception($"File position run-out. Expected {reader.BaseStream.Position}, but limit is {reader.BaseStream.Length}.");
+                        if (reader.BaseStream.Position >= reader.BaseStream.Length)
+                            throw new Exception($"File position run-out. Expected {reader.BaseStream.Position}, but limit is {reader.BaseStream.Length}.");
 
 
                         // TODO: if page is wrong type, some kind of recovery?
@@ -643,16 +648,22 @@ namespace TinyDB
         [NotNull]
         public static IndexPage GetIndexPage(uint pageID, [NotNull]ThreadlockBinaryStream reader)
         {
-            var indexPage = new IndexPage(pageID);
-            ReadFromFile(indexPage, reader);
-            return indexPage;
+            lock (_pageLock)
+            {
+                var indexPage = new IndexPage(pageID);
+                ReadIndexPageFromFile(indexPage, reader);
+                return indexPage;
+            }
         }
 
         [NotNull]public static DataPage GetDataPage(uint pageID, [NotNull]ThreadlockBinaryStream reader, bool onlyHeader)
         {
-            var dataPage = new DataPage(pageID);
-            dataPage.Valid = ReadFromFile(dataPage, reader, onlyHeader);
-            return dataPage;
+            lock (_pageLock)
+            {
+                var dataPage = new DataPage(pageID);
+                dataPage.Valid = ReadDataPageFromFile(dataPage, reader, onlyHeader);
+                return dataPage;
+            }
         }
 
         public static BasePage GetBasePage(uint pageID, [NotNull]ThreadlockBinaryStream storage)
@@ -1039,42 +1050,18 @@ namespace TinyDB
                 {
                     lock (engine.Header)
                     {
-                        DataPage dataPage = null;
                         var buffer = new byte[DataPage.DATA_PER_PAGE];
                         uint totalBytes = 0;
 
                         int read;
                         int dataPerPage = (int)DataPage.DATA_PER_PAGE;
+                        var dataPage = engine.GetPageData(node.DataPageID);
 
                         while ((read = stream.Read(buffer, 0, dataPerPage)) > 0)
                         {
+                            if (totalBytes > 0) { dataPage = GetNewDataPage(dataPage, engine); }
+
                             totalBytes += (uint)read;
-
-                            if (dataPage == null) // First read
-                            {
-                                dataPage = engine.GetPageData(node.DataPageID);
-                            }
-                            else
-                            {
-                                dataPage = GetNewDataPage(dataPage, engine);
-                            }
-
-                            /*if (dataPage?.Valid != true) {
-                                // todo: cleanup:
-                                // This doesn't actually work.
-                                Console.WriteLine("Data page failed. Second try...");
-                                if (dataPage == null) // First read
-                                {
-                                    dataPage = engine.GetPageData(node.DataPageID);
-                                }
-                                else
-                                {
-                                    dataPage = GetNewDataPage(dataPage, engine);
-                                }
-                                //todo: end <--
-                            }*/
-
-                            if (dataPage == null) throw new Exception("Data page was null");
 
                             if (!dataPage.IsEmpty) throw new Exception($"Page {dataPage.PageID} is not empty");
 
@@ -1083,7 +1070,6 @@ namespace TinyDB
                             dataPage.DataBlockLength = (short)read;
                         }
 
-                        if (dataPage == null) throw new Exception("Data page was null");
                         // If the last page point to another one, i need to fix that
                         if (dataPage.NextPageID != uint.MaxValue)
                         {
@@ -1428,7 +1414,7 @@ namespace TinyDB
             }
         }
 
-        public DataPage GetPageData(uint pageID)
+        [NotNull]public DataPage GetPageData(uint pageID)
         {
             if (pageID == Header.LastPageID) // Page does not exists in disk
             {
@@ -1582,11 +1568,6 @@ namespace TinyDB
         public void Dispose()
         {
             Storage.Close();
-            // Unlock the file, prevent concurrence writing
-            /*Writer.Unlock(Header.LOCKER_POS, 1);
-            Writer.Close();
-
-            Reader.Close();*/
         }
 
         public static void CreateEmptyFile([NotNull]Stream storageStream)
