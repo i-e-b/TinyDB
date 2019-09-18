@@ -270,8 +270,54 @@ namespace TinyDbTests
         }
 
         [Test]
-        public void multiple_threads_reading_is_supported () {
-            Assert.Fail("Not yet implemented");
+        public void multiple_threads_reading_and_writing_is_supported () {
+            ThreadPool.SetMinThreads(10,10);
+            ThreadPool.SetMaxThreads(10,10);
+
+            int count = 0;
+            const int target = 100;
+
+            using (var stream = new MemoryStream())
+            {
+                var subject = Datastore.TryConnect(stream);
+
+                for (int i = 0; i < target; i++)
+                {
+                    var j = i;// unbind closure
+                    ThreadPool.QueueUserWorkItem(x =>
+                    {
+                        try
+                        {
+                            var data = MakeSourceStream("Data for item " + j);
+                            var info = subject.Store($"file_{j}", data);
+                            
+                            ThreadPool.QueueUserWorkItem(y => {
+                                using (var result = new MemoryStream())
+                                {
+                                    var entry = subject.Read(info.ID, result);
+                                    result.Seek(0, SeekOrigin.Begin);
+                                    var str = Encoding.UTF8.GetString(result.ToArray());
+                                    Assert.That(entry.FileName, Is.EqualTo($"file_{j}"));
+                                    Assert.That(str, Is.EqualTo("Data for item " + j));
+                                }
+                            });
+                        }
+                        catch (Exception ex) {
+                            Console.WriteLine($"Writing item {j} failed with: " + ex);
+                        }
+                        finally
+                        {
+                            Interlocked.Increment(ref count);
+                        }
+                    });
+                }
+
+                // wait for threads
+                while (count < target) { Thread.Sleep(100); }
+
+                var everything = subject.ListFiles();
+                Assert.That(everything.Length, Is.EqualTo(target), $"Expected {target} files, but got {everything.Length}");
+            }
         }
 
         [Test]

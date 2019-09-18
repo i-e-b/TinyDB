@@ -92,7 +92,7 @@ namespace TinyDB
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
 
-            lock (_engine) // <-- test
+            lock (_engine)
             {
                 var entry = new EntryInfo(fileName);
                 _engine.Write(entry, input);
@@ -247,7 +247,17 @@ namespace TinyDB
         public void Close()
         {
             _token = null;
-            if (_master is FileStream fileStream) fileStream.Unlock(0, fileStream.Length);
+            if (_master is FileStream fileStream)
+            {
+                try
+                {
+                    fileStream.Unlock(0, fileStream.Length);
+                }
+                catch
+                {
+                    // Ignore
+                }
+            }
             if (_closeBase) _master?.Close();
         }
 
@@ -584,12 +594,10 @@ namespace TinyDB
 
                         if (target != initPos) throw new Exception("Unexpected end of file");
 
-                        // TODO: if file run out, retry or grow?
+                        // This happens when writes happen in parallel
                         if (reader.BaseStream.Position >= reader.BaseStream.Length)
                             throw new Exception($"File position run-out. Expected {reader.BaseStream.Position}, but limit is {reader.BaseStream.Length}.");
 
-
-                        // TODO: if page is wrong type, some kind of recovery?
                         var pageType = reader.ReadByte();
                         EnsurePageIsDataType(pageType, dataPage.PageID);
 
@@ -618,7 +626,6 @@ namespace TinyDB
 
         public static void WriteToFile([NotNull]DataPage dataPage, [NotNull]ThreadlockBinaryStream storage)
         {
-            if (dataPage.IsEmpty) throw new Exception("Tried to write empty page");
             lock (_pageLock)
             {
                 var writer = storage.AcquireWriter();
@@ -1371,7 +1378,7 @@ namespace TinyDB
         [NotNull]public CacheIndexPage CacheIndexPage { get; } // Used for cache index pages.
         [NotNull]public Header Header { get; }
 
-        [NotNull] private object _globalLock = new object(); // aggressive lock -- use as infrequently as possible
+        [NotNull] private readonly object _globalLock = new object(); // aggressive lock -- use as infrequently as possible
 
         public Engine([NotNull]Stream stream)
         {
@@ -1428,33 +1435,36 @@ namespace TinyDB
         public void Write([NotNull]EntryInfo entry, [NotNull]Stream stream)
         {
             // Take the first index page
-            var rootIndexNode = IndexFactory.GetRootIndexNode(this);
-            if (rootIndexNode == null) throw new Exception("Could not find root index node: database is corrupt");
-
-            // Search and insert the index
             IndexNode indexNode;
             lock (_globalLock)
             {
+
+                var rootIndexNode = IndexFactory.GetRootIndexNode(this);
+                if (rootIndexNode == null) throw new Exception("Could not find root index node: database is corrupt");
+
+                // Search and insert the index
                 indexNode = IndexFactory.BinaryInsert(entry, rootIndexNode, this);
                 if (indexNode == null) throw new Exception("Could not insert new index node");
             }
 
-            lock (indexNode)
+            // In this moment, the index are ready and saved. I use to add the file
+            lock (_globalLock)
             {
-                Storage.Flush();
-
-                // In this moment, the index are ready and saved. I use to add the file
                 DataFactory.InsertFile(indexNode, stream, this);
-
-                // Update entry information with file length (I know file length only after read all)
-                entry.FileLength = indexNode.FileLength;
-
-                // Only after insert all stream file I confirm that index node is valid
-                indexNode.IsDeleted = false;
+                Storage.Flush();
             }
 
+            // Update entry information with file length (I know file length only after read all)
+            entry.FileLength = indexNode.FileLength;
+
+            // Only after insert all stream file I confirm that index node is valid
+            indexNode.IsDeleted = false;
+
             // Mask header as dirty for save on dispose
-            Header.IsDirty = true;
+            lock (Header)
+            {
+                Header.IsDirty = true;
+            }
         }
 
         public IndexNode Search(Guid id)
