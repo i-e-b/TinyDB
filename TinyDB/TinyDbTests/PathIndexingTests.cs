@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using NUnit.Framework;
+using NUnit.Framework.Constraints;
 
 namespace TinyDbTests
 {
@@ -20,15 +22,100 @@ namespace TinyDbTests
         }
 
         [Test]
-        public void can_query_for_keys ()
+        public void stress_test () {
+            var subject = new PathTrie();
+
+            subject.Add("start", "start value");
+
+            long totalBytes = 0;
+            for (int i = 0; i < 1000; i++)
+            {
+                var newKey = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
+                var newValue = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
+
+                totalBytes += newKey.Length;
+                totalBytes += newValue.Length;
+
+                subject.Add(newKey, newValue);
+            }
+
+            subject.Add("end", "end value");
+            
+            Assert.That(subject.Get("start"), Is.EqualTo("start value"));
+            Assert.That(subject.Get("end"), Is.EqualTo("end value"));
+
+            
+            using (var ms = new MemoryStream()) {
+                subject.WriteTo(ms);
+                Console.WriteLine($"Produced {totalBytes} bytes");
+                Console.WriteLine($"Stored {ms.Length} bytes");
+            }
+
+            Console.WriteLine(subject.DiagnosticString());
+        }
+
+        [Test]
+        public void can_query_keys_for_values ()
         {
-            Assert.Fail("NYI");
+            var subject = new PathTrie();
+
+            subject.Add("my/path/1", "value1");
+            subject.Add("my/path/2", "value2");
+            subject.Add("my/other/path", "value3");
+            subject.Add("my/other/path/longer", "value4");
+
+            var r1 = subject.Get("my/path/2");
+            var r2 = subject.Get("my/other/path");
+            var r3 = subject.Get("not/here");
+
+            Assert.That(r1, Is.EqualTo("value2"));
+            Assert.That(r2, Is.EqualTo("value3"));
+            Assert.That(r3, Is.Null);
+        }
+
+        [Test]
+        public void can_remove_values_from_keys () {
+            // Note -- we don't actually remove the key, just the value
+            // This is the same as setting the value to null.
+
+            var subject = new PathTrie();
+
+            subject.Add("my/path/1", "value1");
+            subject.Add("my/path/2", "value2");
+            subject.Add("my/other/path", "value3");
+            subject.Add("my/other/path/longer", "value4");
+
+            var r1 = subject.Get("my/path/2");
+            Assert.That(r1, Is.EqualTo("value2"));
+
+
+            subject.Delete("my/path/2");
+
+            var r2 = subject.Get("my/other/path");
+            var r3 = subject.Get("my/path/1");
+            var r4 = subject.Get("my/path/2");
+
+            Assert.That(r2, Is.EqualTo("value3"));
+            Assert.That(r3, Is.EqualTo("value1"));
+            Assert.That(r4, Is.Null);
         }
 
         [Test]
         public void can_output_to_a_stream ()
         {
-            Assert.Fail("NYI");
+            var subject = new PathTrie();
+
+            subject.Add("my/path/1", "value1");
+            subject.Add("my/path/2", "value2");
+            subject.Add("my/other/path", "value3");
+            subject.Add("my/other/path/longer", "value4");
+
+            using (var ms = new MemoryStream()) {
+                subject.WriteTo(ms);
+                Assert.That(ms.Length, Is.GreaterThan(10));
+
+                Console.WriteLine($"Wrote {ms.Length} bytes");
+            }
         }
 
         [Test]
@@ -58,12 +145,12 @@ namespace TinyDbTests
         }
 
 
-        private readonly List<Node> _index;
+        private readonly List<Node> _nodes;
         private readonly List<string> _entries;
 
         public PathTrie()
         {
-            _index = new List<Node>();
+            _nodes = new List<Node>();
             _entries = new List<string>();
         }
 
@@ -76,10 +163,89 @@ namespace TinyDbTests
 
             var nodeIdx = EnsurePath(path);
 
-            var node = _index[nodeIdx];
+            var node = _nodes[nodeIdx];
             var oldValue = GetValue(node.DataIdx);
             SetValue(nodeIdx, value);
             return oldValue;
+        }
+
+        /// <summary>
+        /// Get a value by exact path.
+        /// If the path has no value, NULL will be returned
+        /// </summary>
+        public string Get(string exactPath)
+        {
+            if (string.IsNullOrEmpty(exactPath)) return null;
+
+            var nodeIdx = WalkPath(exactPath);
+            if (nodeIdx < 0 || nodeIdx >= _nodes.Count) return null;
+            var node = _nodes[nodeIdx];
+            return GetValue(node.DataIdx);
+        }
+
+        /// <summary>
+        /// Delete the value for a key, by exact path.
+        /// If the path has no value, nothing happens
+        /// </summary>
+        public void Delete(string exactPath)
+        {
+            if (string.IsNullOrEmpty(exactPath)) return;
+
+            var nodeIdx = WalkPath(exactPath);
+            if (nodeIdx < 0 || nodeIdx >= _nodes.Count) return;
+            var node = _nodes[nodeIdx];
+            SetValue(node.DataIdx, null);
+            node.DataIdx = -1;
+        }
+        
+        private int WalkPath(string path)
+        {
+            int curr = 0;
+            int next = 0;
+
+            int cpos = 0; // char offset
+            while (cpos < path.Length)
+            {
+                if (next < 0) return -1;
+                curr = next;
+
+                var ch = path[cpos];
+                next = ReadStep(curr, ch, ref cpos);
+                 
+            }
+            return curr;
+        }
+
+        private int ReadStep(int idx, char ch, ref int matchIncr)
+        {
+            if (_nodes.Count < 1) { // empty
+                return -1;
+            }
+
+            var inspect = _nodes[idx];
+
+            if (inspect.Ch == 0) { // empty match. No key here.
+                return -1;
+            }
+
+            if (inspect.Ch == ch) {
+                matchIncr++;
+                return inspect.Match;
+            }
+
+            // can't follow the straight line. Need to branch
+
+            if (ch < inspect.Ch) {
+                // switch left
+                return inspect.Left;
+            }
+
+            if (ch > inspect.Ch) {
+                // switch right
+                return inspect.Right;
+            }
+
+            throw new Exception("Invalid");
         }
 
         private int EnsurePath(string path)
@@ -93,22 +259,20 @@ namespace TinyDbTests
                 curr = next;
 
                 var ch = path[cpos];
-                next = Step(curr, ch, ref cpos);
+                next = BuildStep(curr, ch, ref cpos);
             }
             return curr;
         }
 
-        private int Step(int idx, char ch, ref int matchIncr)
+        private int BuildStep(int idx, char ch, ref int matchIncr)
         {
-            if (_index.Count < 1) { // empty
-                //matchIncr++;
+            if (_nodes.Count < 1) { // empty
                 return NewIndexNode(ch);
             }
 
-            var inspect = _index[idx];
+            var inspect = _nodes[idx];
 
             if (inspect.Ch == 0) { // empty match. Fill it in
-                //matchIncr++;
                 inspect.Ch = ch;
                 if (inspect.Match > -1) throw new Exception("invalid");
                 inspect.Match = NewEmptyIndex(); // next empty match
@@ -130,7 +294,7 @@ namespace TinyDbTests
                 if (inspect.Left < 0) {
                     // add new node for this value, increment match
                     inspect.Left = NewIndexNode(ch);
-                    _index[inspect.Left].Match = NewEmptyIndex();
+                    _nodes[inspect.Left].Match = NewEmptyIndex();
                 }
                 return inspect.Left;
             }
@@ -140,7 +304,7 @@ namespace TinyDbTests
                 if (inspect.Right < 0) {
                     // add new node for this value, increment match
                     inspect.Right = NewIndexNode(ch);
-                    _index[inspect.Right].Match = NewEmptyIndex();
+                    _nodes[inspect.Right].Match = NewEmptyIndex();
                 }
                 return inspect.Right;
             }
@@ -152,8 +316,8 @@ namespace TinyDbTests
         {
             var node = new Node();
             node.Ch = ch;
-            var idx = _index.Count;
-            _index.Add(node);
+            var idx = _nodes.Count;
+            _nodes.Add(node);
             return idx;
         }
         
@@ -161,22 +325,20 @@ namespace TinyDbTests
         {
             var node = new Node();
             node.Ch = (char) 0;
-            var idx = _index.Count;
-            _index.Add(node);
+            var idx = _nodes.Count;
+            _nodes.Add(node);
             return idx;
         }
-
-        private bool IsEmpty() { return _index.Count < 1; }
 
         private void SetValue(int nodeIdx, string value)
         {
             if (nodeIdx < 0) throw new Exception("node index makes no sense");
-            if (nodeIdx >= _index.Count) throw new Exception("node index makes no sense");
+            if (nodeIdx >= _nodes.Count) throw new Exception("node index makes no sense");
 
             var newIdx = _entries.Count;
             _entries.Add(value);
 
-            _index[nodeIdx].DataIdx = newIdx;
+            _nodes[nodeIdx].DataIdx = newIdx;
         }
 
         private string GetValue(int nodeDataIdx)
@@ -192,7 +354,7 @@ namespace TinyDbTests
 
             sb.AppendLine("INDEX: ");
             int i = 0;
-            foreach (var node in _index)
+            foreach (var node in _nodes)
             {
                 sb.Append("    ");
                 sb.Append(i);
@@ -223,6 +385,61 @@ namespace TinyDbTests
             }
 
             return sb.ToString();
+        }
+
+        // Flag values
+        const byte HAS_MATCH = 1 << 0;
+        const byte HAS_LEFT = 1 << 1;
+        const byte HAS_RIGHT = 1 << 2;
+        const byte HAS_DATA = 1 << 3;
+
+        /// <summary>
+        /// Write a serialised form to the stream at its current position
+        /// </summary>
+        public void WriteTo(Stream stream)
+        {
+            const long INDEX_MARKER = 0xFACEFEED; // 32 bits of zero, then the magic number
+            const long DATA_MARKER  = 0xBACCFACE;
+
+            if (stream == null) return;
+            using (var w = new BinaryWriter(stream, Encoding.UTF8, true))
+            {
+                w.Write(INDEX_MARKER);
+                w.Write(_nodes.Count);
+                foreach (var node in _nodes) { WriteIndexNode(node, w); }
+                
+                w.Write(DATA_MARKER);
+                w.Write(_entries.Count);
+                foreach (var entry in _entries) { WriteDataEntry(entry, w); }
+            }
+        }
+
+        private void WriteDataEntry(string data, BinaryWriter w)
+        {
+            if (data == null) {
+                w.Write((int)-1);
+                return;
+            }
+            var bytes = Encoding.UTF8.GetBytes(data); // we do this to ensure an exact byte count
+            w.Write(bytes.Length);
+            w.Write(bytes);
+        }
+
+        private static void WriteIndexNode(Node node, BinaryWriter w)
+        {
+            byte flags = 0;
+            if (node.Match >= 0) flags |= HAS_MATCH;
+            if (node.Left >= 0) flags |= HAS_LEFT;
+            if (node.Right >= 0) flags |= HAS_RIGHT;
+            if (node.DataIdx >= 0) flags |= HAS_DATA;
+
+            w.Write(node.Ch);
+            w.Write(flags);
+
+            if (node.Match >= 0) w.Write(node.Match);
+            if (node.Left >= 0) w.Write(node.Left);
+            if (node.Right >= 0) w.Write(node.Right);
+            if (node.DataIdx >= 0) w.Write(node.DataIdx);
         }
     }
 }
