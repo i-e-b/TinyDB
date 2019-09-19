@@ -9,10 +9,32 @@ namespace TinyDbTests
     [TestFixture]
     public class PathIndexingTests
     {
+        class ByteString : IByteSerialisable {
+            private string _str;
+            public ByteString() { }
+            public static ByteString Wrap(string str) { return new ByteString{_str = str }; }
+
+            /// <inheritdoc />
+            public byte[] ToBytes() {
+                if (_str == null) return new byte[0];
+                return Encoding.UTF8.GetBytes(_str);
+            }
+
+            /// <inheritdoc />
+            public void FromBytes(byte[] source) {
+                if (source == null) return;
+                _str = Encoding.UTF8.GetString(source);
+            }
+
+            public static implicit operator ByteString(string other){ return ByteString.Wrap(other); }
+            public static explicit operator string(ByteString other){ return other?._str; }
+            public override string ToString() { return _str; }
+        }
+
         [Test]
         public void can_add_keys_to_tree ()
         {
-            var subject = new PathTrie();
+            var subject = new PathIndex<ByteString>();
 
             subject.Add("my/path/1", "value1");
             subject.Add("my/other/path", "value2");
@@ -22,7 +44,7 @@ namespace TinyDbTests
 
         [Test]
         public void stress_test () {
-            var subject = new PathTrie();
+            var subject = new PathIndex<ByteString>();
 
             subject.Add("start", "start value");
 
@@ -40,8 +62,8 @@ namespace TinyDbTests
 
             subject.Add("end", "end value");
             
-            Assert.That(subject.Get("start"), Is.EqualTo("start value"));
-            Assert.That(subject.Get("end"), Is.EqualTo("end value"));
+            Assert.That((string)subject.Get("start"), Is.EqualTo("start value"));
+            Assert.That((string)subject.Get("end"), Is.EqualTo("end value"));
 
             
             using (var ms = new MemoryStream()) {
@@ -56,7 +78,7 @@ namespace TinyDbTests
         [Test]
         public void can_query_keys_for_values ()
         {
-            var subject = new PathTrie();
+            var subject = new PathIndex<ByteString>();
 
             subject.Add("my/path/1", "value1");
             subject.Add("my/path/2", "value2");
@@ -67,8 +89,8 @@ namespace TinyDbTests
             var r2 = subject.Get("my/other/path");
             var r3 = subject.Get("not/here");
 
-            Assert.That(r1, Is.EqualTo("value2"));
-            Assert.That(r2, Is.EqualTo("value3"));
+            Assert.That((string)r1, Is.EqualTo("value2"));
+            Assert.That((string)r2, Is.EqualTo("value3"));
             Assert.That(r3, Is.Null);
         }
 
@@ -77,7 +99,7 @@ namespace TinyDbTests
             // Note -- we don't actually remove the key, just the value
             // This is the same as setting the value to null.
 
-            var subject = new PathTrie();
+            var subject = new PathIndex<ByteString>();
 
             subject.Add("my/path/1", "value1");
             subject.Add("my/path/2", "value2");
@@ -85,7 +107,7 @@ namespace TinyDbTests
             subject.Add("my/other/path/longer", "value4");
 
             var r1 = subject.Get("my/path/2");
-            Assert.That(r1, Is.EqualTo("value2"));
+            Assert.That((string)r1, Is.EqualTo("value2"));
 
 
             subject.Delete("my/path/2");
@@ -94,15 +116,15 @@ namespace TinyDbTests
             var r3 = subject.Get("my/path/1");
             var r4 = subject.Get("my/path/2");
 
-            Assert.That(r2, Is.EqualTo("value3"));
-            Assert.That(r3, Is.EqualTo("value1"));
-            Assert.That(r4, Is.Null);
+            Assert.That((string)r2, Is.EqualTo("value3"));
+            Assert.That((string)r3, Is.EqualTo("value1"));
+            Assert.That((string)r4, Is.Null);
         }
 
         [Test]
         public void can_output_to_a_stream ()
         {
-            var subject = new PathTrie();
+            var subject = new PathIndex<ByteString>();
 
             subject.Add("my/path/1", "value1");
             subject.Add("my/path/2", "value2");
@@ -120,7 +142,7 @@ namespace TinyDbTests
         [Test]
         public void can_read_from_a_stream () 
         {
-            var source = new PathTrie();
+            var source = new PathIndex<ByteString>();
 
             source.Add("my/path/1", "value1");
             source.Add("my/path/2", "value2");
@@ -130,17 +152,29 @@ namespace TinyDbTests
             using (var ms = new MemoryStream()) {
                 source.WriteTo(ms);
                 ms.Seek(0, SeekOrigin.Begin);
-                var target = PathTrie.ReadFrom(ms);
+                var target = PathIndex<ByteString>.ReadFrom(ms);
 
-                Assert.That(target.Get("my/path/1"), Is.EqualTo("value1"));
-                Assert.That(target.Get("my/path/2"), Is.EqualTo("value2"));
-                Assert.That(target.Get("my/other/path"), Is.EqualTo("value3"));
-                Assert.That(target.Get("my/other/path/longer"), Is.EqualTo("value4"));
+                Assert.That((string)target.Get("my/path/1"), Is.EqualTo("value1"));
+                Assert.That((string)target.Get("my/path/2"), Is.EqualTo("value2"));
+                Assert.That((string)target.Get("my/other/path"), Is.EqualTo("value3"));
+                Assert.That((string)target.Get("my/other/path/longer"), Is.EqualTo("value4"));
             }
         }
     }
 
-    public class PathTrie
+    public interface IByteSerialisable {
+        /// <summary>
+        /// Convert this instance to a byte array
+        /// </summary>
+        byte[] ToBytes();
+    
+        /// <summary>
+        /// Populate from a byte array
+        /// </summary>
+        void FromBytes(byte[] source);
+    }
+
+    public class PathIndex<T> where T : IByteSerialisable, new()
     {
         class Node
         {
@@ -161,20 +195,20 @@ namespace TinyDbTests
 
 
         private readonly List<Node> _nodes;
-        private readonly List<string> _entries;
+        private readonly List<T> _entries;
 
-        public PathTrie()
+        public PathIndex()
         {
             _nodes = new List<Node>();
-            _entries = new List<string>();
+            _entries = new List<T>();
         }
 
         /// <summary>
         /// Insert a path/value pair into the index.
         /// If a value already existed for the path, it will be replaced and the old value returned
         /// </summary>
-        public string Add(string path, string value) {
-            if (string.IsNullOrEmpty(path)) return null;
+        public T Add(string path, T value) {
+            if (string.IsNullOrEmpty(path)) return default;
 
             var nodeIdx = EnsurePath(path);
 
@@ -188,12 +222,12 @@ namespace TinyDbTests
         /// Get a value by exact path.
         /// If the path has no value, NULL will be returned
         /// </summary>
-        public string Get(string exactPath)
+        public T Get(string exactPath)
         {
-            if (string.IsNullOrEmpty(exactPath)) return null;
+            if (string.IsNullOrEmpty(exactPath)) return default;
 
             var nodeIdx = WalkPath(exactPath);
-            if (nodeIdx < 0 || nodeIdx >= _nodes.Count) return null;
+            if (nodeIdx < 0 || nodeIdx >= _nodes.Count) return default;
             var node = _nodes[nodeIdx];
             return GetValue(node.DataIdx);
         }
@@ -209,7 +243,7 @@ namespace TinyDbTests
             var nodeIdx = WalkPath(exactPath);
             if (nodeIdx < 0 || nodeIdx >= _nodes.Count) return;
             var node = _nodes[nodeIdx];
-            SetValue(node.DataIdx, null);
+            SetValue(node.DataIdx, default);
             node.DataIdx = -1;
         }
         
@@ -345,7 +379,7 @@ namespace TinyDbTests
             return idx;
         }
 
-        private void SetValue(int nodeIdx, string value)
+        private void SetValue(int nodeIdx, T value)
         {
             if (nodeIdx < 0) throw new Exception("node index makes no sense");
             if (nodeIdx >= _nodes.Count) throw new Exception("node index makes no sense");
@@ -356,10 +390,10 @@ namespace TinyDbTests
             _nodes[nodeIdx].DataIdx = newIdx;
         }
 
-        private string GetValue(int nodeDataIdx)
+        private T GetValue(int nodeDataIdx)
         {
-            if (nodeDataIdx < 0) return null;
-            if (nodeDataIdx >= _entries.Count) return null;
+            if (nodeDataIdx < 0) return default;
+            if (nodeDataIdx >= _entries.Count) return default;
             return _entries[nodeDataIdx];
         }
 
@@ -435,10 +469,10 @@ namespace TinyDbTests
         /// Read a stream (previously written by `WriteTo`) from its current position
         /// into a new index. Will throw an exception if the data is not consistent and complete.
         /// </summary>
-        public static PathTrie ReadFrom(Stream stream)
+        public static PathIndex<T> ReadFrom(Stream stream)
         {
             if (stream == null) return null;
-            var result = new PathTrie();
+            var result = new PathIndex<T>();
             using (var r = new BinaryReader(stream, Encoding.UTF8, true))
             {
                 if (r.ReadInt64() != INDEX_MARKER) throw new Exception("Input stream missing index marker");
@@ -464,23 +498,26 @@ namespace TinyDbTests
             return result;
         }
 
-        private static string ReadDataEntry(BinaryReader r)
+        private static T ReadDataEntry(BinaryReader r)
         {
             var length = r.ReadInt32();
-            if (length < 0) return null;
-            if (length == 0) return "";
+            if (length < 0) return default;
+            if (length == 0) return default;
 
             var bytes = r.ReadBytes(length);
-            return Encoding.UTF8.GetString(bytes);
+
+            var value = new T(); 
+            value.FromBytes(bytes);
+            return value;
         }
 
-        private void WriteDataEntry(string data, BinaryWriter w)
+        private void WriteDataEntry(T data, BinaryWriter w)
         {
             if (data == null) {
                 w.Write((int)-1);
                 return;
             }
-            var bytes = Encoding.UTF8.GetBytes(data); // we do this to ensure an exact byte count
+            var bytes = data.ToBytes();
             w.Write(bytes.Length);
             w.Write(bytes);
         }
