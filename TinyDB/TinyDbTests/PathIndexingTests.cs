@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using NUnit.Framework;
-using NUnit.Framework.Constraints;
 
 namespace TinyDbTests
 {
@@ -128,17 +127,16 @@ namespace TinyDbTests
             source.Add("my/other/path", "value3");
             source.Add("my/other/path/longer", "value4");
 
-            var target = new PathTrie();
             using (var ms = new MemoryStream()) {
                 source.WriteTo(ms);
                 ms.Seek(0, SeekOrigin.Begin);
-                target.Import(ms);
-            }
+                var target = PathTrie.ReadFrom(ms);
 
-            Assert.That(target.Get("my/path/1"), Is.EqualTo("value1"));
-            Assert.That(target.Get("my/path/2"), Is.EqualTo("value2"));
-            Assert.That(target.Get("my/other/path"), Is.EqualTo("value3"));
-            Assert.That(target.Get("my/other/path/longer"), Is.EqualTo("value4"));
+                Assert.That(target.Get("my/path/1"), Is.EqualTo("value1"));
+                Assert.That(target.Get("my/path/2"), Is.EqualTo("value2"));
+                Assert.That(target.Get("my/other/path"), Is.EqualTo("value3"));
+                Assert.That(target.Get("my/other/path/longer"), Is.EqualTo("value4"));
+            }
         }
     }
 
@@ -437,7 +435,6 @@ namespace TinyDbTests
         /// Read a stream (previously written by `WriteTo`) from its current position
         /// into a new index. Will throw an exception if the data is not consistent and complete.
         /// </summary>
-        /// <param name="stream"></param>
         public static PathTrie ReadFrom(Stream stream)
         {
             if (stream == null) return null;
@@ -469,7 +466,12 @@ namespace TinyDbTests
 
         private static string ReadDataEntry(BinaryReader r)
         {
-            return TODO_IMPLEMENT_ME;
+            var length = r.ReadInt32();
+            if (length < 0) return null;
+            if (length == 0) return "";
+
+            var bytes = r.ReadBytes(length);
+            return Encoding.UTF8.GetString(bytes);
         }
 
         private void WriteDataEntry(string data, BinaryWriter w)
@@ -487,7 +489,17 @@ namespace TinyDbTests
 
         private static Node ReadIndexNode(BinaryReader r)
         {
-            return TODO_IMPLEMENT_ME;
+            var node = new Node();
+
+            node.Ch = r.ReadChar();
+
+            var flags = r.ReadByte();
+            if ((flags & HAS_MATCH) > 0) node.Match = r.ReadInt32();
+            if ((flags & HAS_LEFT) > 0) node.Left = r.ReadInt32();
+            if ((flags & HAS_RIGHT) > 0) node.Right = r.ReadInt32();
+            if ((flags & HAS_DATA) > 0) node.DataIdx = r.ReadInt32();
+
+            return node;
         }
 
         private static void WriteIndexNode(Node node, BinaryWriter w)
