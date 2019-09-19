@@ -5,7 +5,8 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
-namespace JetBrains.Annotations {
+namespace JetBrains.Annotations
+{
     /// <summary>Marked element could be <c>null</c></summary>
     [AttributeUsage(AttributeTargets.All)] internal sealed class CanBeNullAttribute : Attribute { }
     /// <summary>Marked element could never be <c>null</c></summary>
@@ -38,7 +39,8 @@ namespace TinyDB
         /// <summary>
         /// Open a connection to a datastore by file path
         /// </summary>
-        public static Datastore TryConnect(string storagePath){
+        public static Datastore TryConnect(string storagePath)
+        {
             if (string.IsNullOrWhiteSpace(storagePath)) throw new ArgumentNullException(nameof(storagePath));
 
             var normalPath = Path.GetFullPath(storagePath);
@@ -58,7 +60,7 @@ namespace TinyDB
 
             return new Datastore(fs, engine);
         }
-        
+
         /// <summary>
         /// Open a connection to a datastore by seekable stream.
         /// Throws an exception if the stream does not support seeking and reading.
@@ -133,7 +135,8 @@ namespace TinyDB
         /// <summary>
         /// List all files currently stored
         /// </summary>
-        public EntryInfo[] ListFiles(){
+        public EntryInfo[] ListFiles()
+        {
             return _engine.ListAllFiles();
         }
 
@@ -178,7 +181,7 @@ namespace TinyDB
     {
         private volatile Stream _token, _master;
         private readonly bool _closeBase;
-        [NotNull]private readonly object _lock = new object();
+        [NotNull] private readonly object _lock = new object();
 
         public ThreadlockBinaryStream([NotNull]Stream baseStream, bool closeBaseStream = true)
         {
@@ -194,7 +197,8 @@ namespace TinyDB
         /// *MUST* always be released correctly
         /// </summary>
         [NotNull]
-        public BinaryReader AcquireReader() {
+        public BinaryReader AcquireReader()
+        {
             lock (_lock)
             {
                 var stream = Interlocked.Exchange(ref _token, null);
@@ -212,7 +216,8 @@ namespace TinyDB
         /// *MUST* always be released correctly
         /// </summary>
         [NotNull]
-        public BinaryWriter AcquireWriter() {
+        public BinaryWriter AcquireWriter()
+        {
             lock (_lock)
             {
                 var stream = Interlocked.Exchange(ref _token, null);
@@ -225,7 +230,8 @@ namespace TinyDB
             }
         }
 
-        public void Release(BinaryReader reader) {
+        public void Release(BinaryReader reader)
+        {
             lock (_lock)
             {
                 if (reader == null || reader.BaseStream != _master) throw new Exception("Invalid threadlock stream release (reader)");
@@ -234,7 +240,8 @@ namespace TinyDB
             }
         }
 
-        public void Release(BinaryWriter writer) {
+        public void Release(BinaryWriter writer)
+        {
             lock (_lock)
             {
                 if (writer == null || writer.BaseStream != _master) throw new Exception("Invalid threadlock stream release (writer)");
@@ -276,11 +283,14 @@ namespace TinyDB
         }
     }
 
-    public static class GuidExtensions {
+    public static class GuidExtensions
+    {
         /// <summary>
         /// Render a GUID as a Base64 string
         /// </summary>
-        [NotNull]public static string ShortString(this Guid g) {
+        [NotNull]
+        public static string ShortString(this Guid g)
+        {
             return Convert.ToBase64String(g.ToByteArray());
         }
     }
@@ -308,7 +318,7 @@ namespace TinyDB
         /// Contem a página que possui espaço disponível para novas inclusões de indices
         /// </summary>
         public uint FreeIndexPageID { get; set; }      // 4 bytes
-        
+
         /// <summary>
         /// When a deleted data, this variable point to first page emtpy. I will use to insert the next data page
         /// <para></para>
@@ -322,7 +332,7 @@ namespace TinyDB
         /// Define, numa exclusão de dados, a ultima pagina excluida. Será utilizado para fazer segmentos continuos de exclusão, ou seja, assim que um segundo arquivo for apagado, o ponteiro inicial dele deve apontar para o ponteiro final do outro
         /// </summary>
         public uint LastFreeDataPageID { get; set; }   // 4 bytes
-        
+
         /// <summary>
         /// Last used page on FileDB disk (even index or data page). It's used to grow the file db (create new pages)
         /// <para></para>
@@ -343,10 +353,10 @@ namespace TinyDB
         public bool IsDirty { get; set; }
     }
 
-    
+
     public sealed class FileDBStream : Stream
     {
-        [NotNull]private readonly Engine _engine;
+        [NotNull] private readonly Engine _engine;
 
         private long _streamPosition;
         private DataPage _currentPage;
@@ -451,7 +461,7 @@ namespace TinyDB
     internal enum PageType { Invalid = 0, Data = 1, Index = 2 }
     internal class PageFactory
     {
-        [NotNull]private static readonly object _pageLock = new object();
+        [NotNull] private static readonly object _pageLock = new object();
         public static void ReadIndexPageFromFile([NotNull]IndexPage indexPage, [NotNull]ThreadlockBinaryStream storage)
         {
             lock (_pageLock)
@@ -562,9 +572,11 @@ namespace TinyDB
             }
         }
 
-        private static void EnsurePageIsDataType(byte pageType, uint pageID) {
+        private static void EnsurePageIsDataType(byte pageType, uint pageID)
+        {
 
-            switch (pageType) {
+            switch (pageType)
+            {
                 case (byte)PageType.Data: break;
 
                 case (byte)PageType.Index:
@@ -576,7 +588,7 @@ namespace TinyDB
                 default:
                     throw new Exception($"PageID {pageID} is not a Data Page -- expected {(byte)PageType.Data}, but got {pageType}");
             }
-            }
+        }
 
         public static bool ReadDataPageFromFile([NotNull]DataPage dataPage, [NotNull]ThreadlockBinaryStream storage, bool onlyHeader)
         {
@@ -589,7 +601,7 @@ namespace TinyDB
                     {
                         // Seek the stream on first byte from data page
                         var target = Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE);
-                        
+
                         var initPos = reader.BaseStream.Seek(Header.HEADER_SIZE + (dataPage.PageID * BasePage.PAGE_SIZE), SeekOrigin.Begin);
 
                         if (target != initPos) throw new Exception("Unexpected end of file");
@@ -663,7 +675,8 @@ namespace TinyDB
             }
         }
 
-        [NotNull]public static DataPage GetDataPage(uint pageID, [NotNull]ThreadlockBinaryStream reader, bool onlyHeader)
+        [NotNull]
+        public static DataPage GetDataPage(uint pageID, [NotNull]ThreadlockBinaryStream reader, bool onlyHeader)
         {
             lock (_pageLock)
             {
@@ -708,20 +721,21 @@ namespace TinyDB
     internal class CacheIndexPage
     {
         public const int CACHE_SIZE = 200;
-        [NotNull]private static readonly object _cacheLock = new object();
+        [NotNull] private static readonly object _cacheLock = new object();
 
-        [NotNull]private readonly ThreadlockBinaryStream _storage;
-        [NotNull]private readonly Dictionary<uint, IndexPage> _cache;
+        [NotNull] private readonly ThreadlockBinaryStream _storage;
+        [NotNull] private readonly Dictionary<uint, IndexPage> _cache;
         private readonly uint _rootPageID;
 
         public CacheIndexPage(ThreadlockBinaryStream storage, uint rootPageID)
         {
-            _storage = storage ?? throw new ArgumentNullException(nameof(storage)); 
-            _cache = new Dictionary<uint,IndexPage>();
+            _storage = storage ?? throw new ArgumentNullException(nameof(storage));
+            _cache = new Dictionary<uint, IndexPage>();
             _rootPageID = rootPageID;
         }
 
-        [NotNull]public IndexPage GetPage(uint pageID)
+        [NotNull]
+        public IndexPage GetPage(uint pageID)
         {
             lock (_cacheLock)
             {
@@ -799,7 +813,7 @@ namespace TinyDB
         public override PageType Type { get { return PageType.Index; } }  //  1 byte
         public byte NodeIndex { get; set; }                               //  1 byte
 
-        [NotNull]public IndexNode[] Nodes { get; set; }
+        [NotNull] public IndexNode[] Nodes { get; set; }
 
         public bool IsDirty { get; set; }
 
@@ -849,7 +863,7 @@ namespace TinyDB
         public bool IsEmpty { get; set; }                                //  1 byte
         public short DataBlockLength { get; set; }                       //  2 bytes
 
-        [NotNull]public byte[] DataBlock { get; private set;}
+        [NotNull] public byte[] DataBlock { get; private set; }
 
         /// <summary>
         /// Indicates the page has had data loaded in correctly
@@ -911,17 +925,18 @@ namespace TinyDB
         }
     }
 
-    
+
     internal static class BinaryWriterExtensions
     {
         private const int MAX_TRY_LOCK_FILE = 50; // Max try to lock the data file
         private const int DELAY_TRY_LOCK_FILE = 50; // in miliseconds
 
-        
-        [NotNull]public static byte[] LimitedByteString(this string str, int size)
+
+        [NotNull]
+        public static byte[] LimitedByteString(this string str, int size)
         {
             var buffer = new byte[size];
-            var strbytes = Encoding.ASCII.GetBytes(str??"");
+            var strbytes = Encoding.ASCII.GetBytes(str ?? "");
 
             Array.Copy(strbytes, buffer, size > strbytes.Length ? strbytes.Length : size);
 
@@ -987,7 +1002,7 @@ namespace TinyDB
             fileStream?.Unlock(position, length);
         }
     }
-    
+
     internal class DataFactory
     {
         [NotNull] private static readonly object _pageLock = new object();
@@ -1020,7 +1035,8 @@ namespace TinyDB
         }
 
         // Take a new data page on sequence and update the last
-        [NotNull]public static DataPage GetNewDataPage([NotNull]DataPage basePage, [NotNull]Engine engine)
+        [NotNull]
+        public static DataPage GetNewDataPage([NotNull]DataPage basePage, [NotNull]Engine engine)
         {
             lock (_pageLock)
             {
@@ -1170,7 +1186,7 @@ namespace TinyDB
 
     internal class HeaderFactory
     {
-        [NotNull]private static readonly object _lock = new object();
+        [NotNull] private static readonly object _lock = new object();
 
         public static void ReadFromFile([NotNull]Header header, [NotNull]ThreadlockBinaryStream storage)
         {
@@ -1238,7 +1254,7 @@ namespace TinyDB
     }
     internal class IndexFactory
     {
-        [NotNull]private static readonly object _indexLock = new object();
+        [NotNull] private static readonly object _indexLock = new object();
 
         public static IndexNode GetRootIndexNode([NotNull]Engine engine)
         {
@@ -1278,7 +1294,8 @@ namespace TinyDB
             }
         }
 
-        [NotNull]private static IndexNode GetChildIndexNode([NotNull]IndexLink link, [NotNull]Engine engine)
+        [NotNull]
+        private static IndexNode GetChildIndexNode([NotNull]IndexLink link, [NotNull]Engine engine)
         {
             lock (_indexLock)
             {
@@ -1373,11 +1390,11 @@ namespace TinyDB
         }
     }
 
-        internal class Engine : IDisposable
+    internal class Engine : IDisposable
     {
         [NotNull] public ThreadlockBinaryStream Storage { get; }
-        [NotNull]public CacheIndexPage CacheIndexPage { get; } // Used for cache index pages.
-        [NotNull]public Header Header { get; }
+        [NotNull] public CacheIndexPage CacheIndexPage { get; } // Used for cache index pages.
+        [NotNull] public Header Header { get; }
 
         [NotNull] private readonly object _globalLock = new object(); // aggressive lock -- use as infrequently as possible
 
@@ -1422,7 +1439,8 @@ namespace TinyDB
             }
         }
 
-        [NotNull]public DataPage GetPageData(uint pageID)
+        [NotNull]
+        public DataPage GetPageData(uint pageID)
         {
             if (pageID == Header.LastPageID) // Page does not exists in disk
             {
@@ -1621,6 +1639,348 @@ namespace TinyDB
 
     }
 
+    public interface IByteSerialisable
+    {
+        /// <summary>
+        /// Convert this instance to a byte array
+        /// </summary>
+        byte[] ToBytes();
 
-    
+        /// <summary>
+        /// Populate from a byte array
+        /// </summary>
+        void FromBytes(byte[] source);
+    }
+
+
+    public class PathIndex<T> where T : IByteSerialisable, new()
+    {
+        // Flag values
+        const byte HAS_MATCH = 1 << 0;
+        const byte HAS_LEFT = 1 << 1;
+        const byte HAS_RIGHT = 1 << 2;
+        const byte HAS_DATA = 1 << 3;
+
+        const long INDEX_MARKER = 0xFACEFEED; // 32 bits of zero, then the magic number
+        const long DATA_MARKER = 0xBACCFACE;
+        const long END_MARKER = 0xDEADBEEF;
+
+        const int EMPTY_OFFSET = -1; // any pointer that is not set
+
+        private class Node
+        {
+            public char Ch; // the path character at this step
+            public int Left, Match, Right; // Indexes into the node array
+            public int DataIdx; // Index into entries array. If -1, this is not a path endpoint
+            public Node() { Left = Match = Right = DataIdx = EMPTY_OFFSET; }
+        }
+
+        [NotNull, ItemNotNull]private readonly List<Node> _nodes;
+        [NotNull, ItemNotNull]private readonly List<T> _entries;
+
+        public PathIndex() { _nodes = new List<Node>(); _entries = new List<T>(); }
+
+        /// <summary>
+        /// Insert a path/value pair into the index.
+        /// If a value already existed for the path, it will be replaced and the old value returned
+        /// </summary>
+        public T Add(string path, T value)
+        {
+            if (string.IsNullOrEmpty(path)) return default;
+
+            var nodeIdx = EnsurePath(path);
+
+            var node = _nodes[nodeIdx];
+            var oldValue = GetValue(node.DataIdx);
+            SetValue(nodeIdx, value);
+            return oldValue;
+        }
+
+        /// <summary>
+        /// Get a value by exact path.
+        /// If the path has no value, NULL will be returned
+        /// </summary>
+        public T Get(string exactPath)
+        {
+            if (string.IsNullOrEmpty(exactPath)) return default;
+
+            var nodeIdx = WalkPath(exactPath);
+            if (nodeIdx < 0 || nodeIdx >= _nodes.Count) return default;
+            var node = _nodes[nodeIdx];
+            return GetValue(node.DataIdx);
+        }
+
+        /// <summary>
+        /// Delete the value for a key, by exact path.
+        /// If the path has no value, nothing happens
+        /// </summary>
+        public void Delete(string exactPath)
+        {
+            if (string.IsNullOrEmpty(exactPath)) return;
+
+            var nodeIdx = WalkPath(exactPath);
+            if (nodeIdx < 0 || nodeIdx >= _nodes.Count) return;
+            var node = _nodes[nodeIdx];
+            SetValue(node.DataIdx, default);
+            node.DataIdx = EMPTY_OFFSET;
+        }
+
+        private int WalkPath([NotNull]string path)
+        {
+            int curr = 0, next = 0, cpos = 0;
+            while (cpos < path.Length)
+            {
+                if (next < 0) return EMPTY_OFFSET;
+                curr = next;
+
+                var ch = path[cpos];
+                next = ReadStep(curr, ch, ref cpos);
+            }
+            return curr;
+        }
+
+        private int ReadStep(int idx, char ch, ref int matchIncr)
+        {
+            if (_nodes.Count < 1) { return EMPTY_OFFSET; } // empty
+
+            var inspect = _nodes[idx];
+
+            if (inspect.Ch == 0) { return EMPTY_OFFSET; } // empty match. No key here.  
+            if (inspect.Ch == ch) { matchIncr++; return inspect.Match; }
+
+            // can't follow the straight line. Need to branch
+            return ch < inspect.Ch ? inspect.Left : inspect.Right;
+        }
+
+        private int EnsurePath([NotNull]string path)
+        {
+            int curr = 0, next = 0, cpos = 0;
+            while (cpos < path.Length)
+            {
+                curr = next;
+
+                var ch = path[cpos];
+                next = BuildStep(curr, ch, ref cpos);
+            }
+            return curr;
+        }
+
+        private int BuildStep(int idx, char ch, ref int matchIncr)
+        {
+            if (_nodes.Count < 1) { return NewIndexNode(ch); } // empty
+
+            var inspect = _nodes[idx];
+
+            if (inspect.Ch == 0) { // empty match. Fill it in
+                inspect.Ch = ch;
+                if (inspect.Match > EMPTY_OFFSET) throw new Exception("invalid match structure");
+                inspect.Match = NewEmptyIndex(); // next empty match
+                return idx;
+            }
+
+            if (inspect.Ch == ch)
+            {
+                matchIncr++;
+                if (inspect.Match < 0) { inspect.Match = NewEmptyIndex(); }
+                return inspect.Match;
+            }
+
+            // can't follow the straight line. Need to branch
+
+            if (ch < inspect.Ch) { // switch left
+                if (inspect.Left >= 0) return inspect.Left;
+
+                // add new node for this value, increment match
+                inspect.Left = NewIndexNode(ch);
+                _nodes[inspect.Left].Match = NewEmptyIndex();
+                return inspect.Left;
+            }
+
+            // switch right
+            if (inspect.Right >= 0) return inspect.Right;
+            // add new node for this value, increment match
+            inspect.Right = NewIndexNode(ch);
+            _nodes[inspect.Right].Match = NewEmptyIndex();
+            return inspect.Right;
+        }
+
+        private int NewIndexNode(char ch)
+        {
+            var node = new Node {Ch = ch};
+            var idx = _nodes.Count;
+            _nodes.Add(node);
+            return idx;
+        }
+
+        private int NewEmptyIndex()
+        {
+            var node = new Node {Ch = (char) 0};
+            var idx = _nodes.Count;
+            _nodes.Add(node);
+            return idx;
+        }
+
+        private void SetValue(int nodeIdx, T value)
+        {
+            if (nodeIdx < 0) throw new Exception("node index makes no sense");
+            if (nodeIdx >= _nodes.Count) throw new Exception("node index makes no sense");
+
+            var newIdx = _entries.Count;
+            _entries.Add(value);
+
+            _nodes[nodeIdx].DataIdx = newIdx;
+        }
+
+        private T GetValue(int nodeDataIdx)
+        {
+            if (nodeDataIdx < 0) return default;
+            if (nodeDataIdx >= _entries.Count) return default;
+            return _entries[nodeDataIdx];
+        }
+
+        public string DiagnosticString()
+        {
+            var sb = new StringBuilder();
+
+            sb.AppendLine("INDEX: ");
+            int i = 0;
+            foreach (var node in _nodes)
+            {
+                sb.Append("    ");
+                sb.Append(i);
+                sb.Append("['");
+                sb.Append(node.Ch);
+                sb.Append("', D=");
+                sb.Append(node.DataIdx);
+                sb.Append(", L=");
+                sb.Append(node.Left);
+                sb.Append(", M=");
+                sb.Append(node.Match);
+                sb.Append(", R=");
+                sb.Append(node.Right);
+                sb.AppendLine("];");
+                i++;
+            }
+
+            sb.AppendLine("DATA: ");
+            i = 0;
+            foreach (var entry in _entries)
+            {
+                sb.Append("    ");
+                sb.Append(i);
+                sb.Append("[");
+                sb.Append(entry);
+                sb.AppendLine("];");
+                i++;
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Write a serialised form to the stream at its current position
+        /// </summary>
+        public void WriteTo(Stream stream)
+        {
+            if (stream == null) return;
+            using (var w = new BinaryWriter(stream, Encoding.UTF8, true))
+            {
+                w.Write(INDEX_MARKER);
+                w.Write(_nodes.Count);
+                foreach (var node in _nodes) { WriteIndexNode(node, w); }
+
+                w.Write(DATA_MARKER);
+                w.Write(_entries.Count);
+                foreach (var entry in _entries) { WriteDataEntry(entry, w); }
+                w.Write(END_MARKER);
+            }
+        }
+
+        /// <summary>
+        /// Read a stream (previously written by `WriteTo`) from its current position
+        /// into a new index. Will throw an exception if the data is not consistent and complete.
+        /// </summary>
+        [NotNull] public static PathIndex<T> ReadFrom(Stream stream)
+        {
+            if (stream == null) throw new ArgumentNullException(nameof(stream));
+            var result = new PathIndex<T>();
+            using (var r = new BinaryReader(stream, Encoding.UTF8, true))
+            {
+                if (r.ReadInt64() != INDEX_MARKER) throw new Exception("Input stream missing index marker");
+                var nodeCount = r.ReadInt32();
+                if (nodeCount < 0) throw new Exception("Input stream node count invalid");
+
+                for (int i = 0; i < nodeCount; i++)
+                {
+                    result._nodes.Add(ReadIndexNode(r));
+                }
+
+                if (r.ReadInt64() != DATA_MARKER) throw new Exception("Input stream missing data marker");
+                var entryCount = r.ReadInt32();
+                if (entryCount < 0) throw new Exception("Input stream node count invalid");
+
+                for (int i = 0; i < entryCount; i++)
+                {
+                    result._entries.Add(ReadDataEntry(r));
+                }
+
+                if (r.ReadInt64() != END_MARKER) throw new Exception("Input stream missing end marker");
+            }
+            return result;
+        }
+
+        private static T ReadDataEntry([NotNull]BinaryReader r)
+        {
+            var length = r.ReadInt32();
+            if (length < 0) return default;
+            if (length == 0) return default;
+
+            var bytes = r.ReadBytes(length);
+
+            var value = new T();
+            value.FromBytes(bytes);
+            return value;
+        }
+
+        private void WriteDataEntry(T data, [NotNull]BinaryWriter w)
+        {
+            if (data == null) { w.Write(EMPTY_OFFSET); return; }
+            var bytes = data.ToBytes();
+            if (bytes == null) { w.Write(EMPTY_OFFSET); return; }
+            w.Write(bytes.Length);
+            w.Write(bytes);
+        }
+
+        private static Node ReadIndexNode([NotNull]BinaryReader r)
+        {
+            var node = new Node {Ch = r.ReadChar()};
+
+
+            var flags = r.ReadByte();
+            if ((flags & HAS_MATCH) > 0) node.Match = r.ReadInt32();
+            if ((flags & HAS_LEFT) > 0) node.Left = r.ReadInt32();
+            if ((flags & HAS_RIGHT) > 0) node.Right = r.ReadInt32();
+            if ((flags & HAS_DATA) > 0) node.DataIdx = r.ReadInt32();
+
+            return node;
+        }
+
+        private static void WriteIndexNode([NotNull]Node node, [NotNull]BinaryWriter w)
+        {
+            byte flags = 0;
+            if (node.Match >= 0) flags |= HAS_MATCH;
+            if (node.Left >= 0) flags |= HAS_LEFT;
+            if (node.Right >= 0) flags |= HAS_RIGHT;
+            if (node.DataIdx >= 0) flags |= HAS_DATA;
+
+            w.Write(node.Ch);
+            w.Write(flags);
+
+            if (node.Match >= 0) w.Write(node.Match);
+            if (node.Left >= 0) w.Write(node.Left);
+            if (node.Right >= 0) w.Write(node.Right);
+            if (node.DataIdx >= 0) w.Write(node.DataIdx);
+        }
+    }
+
 }
