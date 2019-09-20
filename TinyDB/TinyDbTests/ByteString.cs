@@ -5,7 +5,7 @@ namespace TinyDbTests
 {
     public class ByteString : IByteSerialisable {
         private string _str;
-        public ByteString() { }
+
         public static ByteString Wrap(string str) { return new ByteString{_str = str }; }
 
         /// <inheritdoc />
@@ -20,8 +20,8 @@ namespace TinyDbTests
             _str = Encoding.UTF8.GetString(source);
         }
 
-        public static implicit operator ByteString(string other){ return ByteString.Wrap(other); }
+        public static implicit operator ByteString(string other){ return Wrap(other); }
         public static explicit operator string(ByteString other){ return other?._str; }
-        public override string ToString() { return _str; }
+        public override string ToString() { return _str ?? ""; }
     }
 }

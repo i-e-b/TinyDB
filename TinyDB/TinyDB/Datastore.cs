@@ -26,15 +26,15 @@ namespace TinyDB
     /// </summary>
     public class Datastore : IDisposable
     {
-        [NotNull] private readonly Stream _fs;
-        [NotNull] private readonly Engine _engine;
+        [NotNull]   private readonly Stream       _fs;
+        [NotNull]   private readonly Engine       _engine;
+        [CanBeNull] private PathIndex<SerialGuid> _pathIndexCache;
 
         private Datastore(Stream fs, Engine engine)
         {
             _fs = fs ?? throw new ArgumentNullException(nameof(fs));
             _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         }
-
 
         /// <summary>
         /// Open a connection to a datastore by file path
@@ -83,7 +83,6 @@ namespace TinyDB
             return new Datastore(storage, engine);
         }
 
-
         /// <summary>
         /// Write a file to the given path, returning the entry info
         /// </summary>
@@ -97,10 +96,79 @@ namespace TinyDB
             lock (_engine)
             {
                 var entry = new EntryInfo(fileName);
+
+                var index = GetPathIndex();
+                var old = index.Add(fileName, entry.ID);
+
                 _engine.Write(entry, input);
+                StorePathIndex();
+
+                if (old != null) _engine.Delete((Guid)old);
+
                 return entry;
             }
         }
+
+        /// <summary>
+        /// Write the path index back to the main store
+        /// </summary>
+        private void StorePathIndex()
+        {
+            var index = GetPathIndex();
+            using (var ms = new MemoryStream())
+            {
+                index.WriteTo(ms);
+                ms.Seek(0, SeekOrigin.Begin);
+                var entry = new EntryInfo("PathIndex") { ID = Engine.PathIndexID, FileLength = (uint)ms.Length };
+
+                //_engine.Write(entry, ms); // need a version of this that can overwrite -- as this *always* crashes at the moment
+                _engine.Overwrite(entry, ms);
+            }
+        }
+
+        /// <summary>
+        /// Returns a cache of the path index, or reads it from the DB
+        /// </summary>
+        [NotNull]private PathIndex<SerialGuid> GetPathIndex() {
+            if (_pathIndexCache != null) return _pathIndexCache;
+
+            using (var ms = new MemoryStream())
+            {
+                var info = _engine.Read(Engine.PathIndexID, ms);
+                if (info == null)
+                {
+                    _pathIndexCache = new PathIndex<SerialGuid>();
+                }
+                else
+                {
+                    ms.Seek(0, SeekOrigin.Begin);
+                    _pathIndexCache = PathIndex<SerialGuid>.ReadFrom(ms);
+                }
+            }
+            return _pathIndexCache;
+        }
+
+        /// <summary>
+        /// Read stored file to a stream, also returning file details.
+        /// If a null stream is passed, only details will be returned.
+        /// Returns null if no file was found or no index is available.
+        /// </summary>
+        /// <param name="fileName">Name of file</param>
+        /// <param name="output">Writable stream. Don't forget to seek before calling.</param>
+        /// <returns>File entry info</returns>
+        public EntryInfo Read(string fileName, Stream output)
+        {
+            // read index data
+            var index = GetPathIndex();
+
+            // look up the path
+            var id = index.Get(fileName);
+            if (id == null) return null;
+
+            // got an ID from the index. Read as normal.
+            return Read((Guid)id, output);
+        }
+
 
         /// <summary>
         /// Read stored file to a stream, also returning file details.
@@ -177,7 +245,7 @@ namespace TinyDB
     /// <summary>
     /// Provides thread-locked access to a stream, as either a BinaryReader or BinaryWriter
     /// </summary>
-    public class ThreadlockBinaryStream : IDisposable
+    internal class ThreadlockBinaryStream : IDisposable
     {
         private volatile Stream _token, _master;
         private readonly bool _closeBase;
@@ -295,7 +363,6 @@ namespace TinyDB
         }
     }
 
-
     internal class Header
     {
         public const long LOCKER_POS = 98;
@@ -353,7 +420,7 @@ namespace TinyDB
         public bool IsDirty { get; set; }
     }
 
-
+    /// <summary> Represents the data retrieved from a database entry </summary>
     public sealed class FileDBStream : Stream
     {
         [NotNull] private readonly Engine _engine;
@@ -715,7 +782,6 @@ namespace TinyDB
         }
     }
 
-
     internal delegate void ReleasePageIndexFromCache(IndexPage page);
 
     internal class CacheIndexPage
@@ -794,7 +860,6 @@ namespace TinyDB
             }
         }
     }
-
 
     internal abstract class BasePage
     {
@@ -924,7 +989,6 @@ namespace TinyDB
             FileLength = entity.FileLength;
         }
     }
-
 
     internal static class BinaryWriterExtensions
     {
@@ -1268,7 +1332,7 @@ namespace TinyDB
             }
         }
 
-        public static IndexNode BinaryInsert([NotNull]EntryInfo target, [NotNull]IndexNode baseNode, [NotNull]Engine engine)
+        public static IndexNode BinaryInsert([NotNull]EntryInfo target, [NotNull]IndexNode baseNode, [NotNull]Engine engine, bool acceptCollision)
         {
             lock (_indexLock)
             {
@@ -1282,13 +1346,14 @@ namespace TinyDB
                     case 1:
                         return baseNode.Right.IsEmpty
                             ? BinaryInsertNode(baseNode.Right, baseNode, target, engine)
-                            : BinaryInsert(target, GetChildIndexNode(baseNode.Right, engine), engine);
+                            : BinaryInsert(target, GetChildIndexNode(baseNode.Right, engine), engine, acceptCollision);
                     // < Less (Left)
                     case -1:
                         return baseNode.Left.IsEmpty
                             ? BinaryInsertNode(baseNode.Left, baseNode, target, engine)
-                            : BinaryInsert(target, GetChildIndexNode(baseNode.Left, engine), engine);
+                            : BinaryInsert(target, GetChildIndexNode(baseNode.Left, engine), engine, acceptCollision);
                     default:
+                        if (acceptCollision) { return BinaryInsertNode(null, baseNode, target, engine);}
                         throw new Exception("GUID collision.");
                 }
             }
@@ -1304,7 +1369,7 @@ namespace TinyDB
             }
         }
 
-        private static IndexNode BinaryInsertNode([NotNull]IndexLink baseLink, [NotNull]IndexNode baseNode, [NotNull]EntryInfo entry, [NotNull]Engine engine)
+        private static IndexNode BinaryInsertNode(IndexLink baseLink, [NotNull]IndexNode baseNode, [NotNull]EntryInfo entry, [NotNull]Engine engine)
         {
             lock (_indexLock)
             {
@@ -1317,8 +1382,11 @@ namespace TinyDB
 
                 lock (newNode)
                 {
-                    baseLink.PageID = pageIndex.PageID;
-                    baseLink.Index = pageIndex.NodeIndex;
+                    if (baseLink != null)
+                    {
+                        baseLink.PageID = pageIndex.PageID;
+                        baseLink.Index = pageIndex.NodeIndex;
+                    }
 
                     newNode.UpdateFromEntry(entry);
                     newNode.DataPageID = DataFactory.GetStartDataPageID(engine);
@@ -1362,10 +1430,9 @@ namespace TinyDB
 
     }
 
-
     public class EntryInfo
     {
-        public Guid ID { get; }
+        public Guid ID { get; internal set; }
         public string FileName { get; }
         public uint FileLength { get; internal set; }
 
@@ -1396,7 +1463,8 @@ namespace TinyDB
         [NotNull] public CacheIndexPage CacheIndexPage { get; } // Used for cache index pages.
         [NotNull] public Header Header { get; }
 
-        [NotNull] private readonly object _globalLock = new object(); // aggressive lock -- use as infrequently as possible
+        public static readonly Guid RootIndexID = new Guid(new byte[] { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 });
+        public static readonly Guid PathIndexID = new Guid(new byte[] { 127,   0, 127,   0, 127,   0, 127,   0, 127,   0, 127,   0, 127,   0, 127,   0 });
 
         public Engine([NotNull]Stream stream)
         {
@@ -1450,28 +1518,58 @@ namespace TinyDB
 
             return PageFactory.GetDataPage(pageID, Storage, false);
         }
+        
+
+        public void Overwrite([NotNull]EntryInfo entry, [NotNull]Stream stream)
+        {
+            // Take the first index page
+            var rootIndexNode = IndexFactory.GetRootIndexNode(this);
+            if (rootIndexNode == null) throw new Exception("Could not find root index node: database is corrupt");
+
+            // Search and insert the index
+            var indexNode = IndexFactory.BinaryInsert(entry, rootIndexNode, this, true);
+            if (indexNode == null) throw new Exception("Could not insert new index node");
+
+
+            if (indexNode.IsDeleted == false) {
+                // Entry already exists. Delete and re-write the data pages
+                // Mark all data blocks (from data pages) as IsEmpty = true
+                DataFactory.MarkAsEmpty(indexNode.DataPageID, this);
+                indexNode.IsDeleted = true;
+                //indexNode.DataPageID = Header.FreeDataPageID; // THIS IS NOT WORKING
+            }
+
+            // In this moment, the index are ready and saved. I use to add the file
+            DataFactory.InsertFile(indexNode, stream, this);
+            Storage.Flush();
+
+            // Update entry information with file length (I know file length only after read all)
+            entry.FileLength = indexNode.FileLength;
+
+            // Only after insert all stream file I confirm that index node is valid
+            indexNode.IsDeleted = false;
+
+            // Mask header as dirty for save on dispose
+            lock (Header)
+            {
+                Header.IsDirty = true;
+            }
+        }
 
         public void Write([NotNull]EntryInfo entry, [NotNull]Stream stream)
         {
             // Take the first index page
-            IndexNode indexNode;
-            lock (_globalLock)
-            {
+            var rootIndexNode = IndexFactory.GetRootIndexNode(this);
+            if (rootIndexNode == null) throw new Exception("Could not find root index node: database is corrupt");
 
-                var rootIndexNode = IndexFactory.GetRootIndexNode(this);
-                if (rootIndexNode == null) throw new Exception("Could not find root index node: database is corrupt");
-
-                // Search and insert the index
-                indexNode = IndexFactory.BinaryInsert(entry, rootIndexNode, this);
-                if (indexNode == null) throw new Exception("Could not insert new index node");
-            }
+            // Search and insert the index
+            var indexNode = IndexFactory.BinaryInsert(entry, rootIndexNode, this, false);
+            if (indexNode == null) throw new Exception("Could not insert new index node");
+            
 
             // In this moment, the index are ready and saved. I use to add the file
-            lock (_globalLock)
-            {
-                DataFactory.InsertFile(indexNode, stream, this);
-                Storage.Flush();
-            }
+            DataFactory.InsertFile(indexNode, stream, this);
+            Storage.Flush();
 
             // Update entry information with file length (I know file length only after read all)
             entry.FileLength = indexNode.FileLength;
@@ -1563,7 +1661,7 @@ namespace TinyDB
                 {
                     // Convert node (if is not logicaly deleted) to Entry
                     var node = pageIndex.Nodes[i];
-                    if (node != null && !node.IsDeleted) list.Add(new EntryInfo(node));
+                    if (node != null && !node.IsDeleted && node.ID != PathIndexID) list.Add(new EntryInfo(node));
                 }
 
                 if (pageIndex.NextPageID == uint.MaxValue) break;
@@ -1582,11 +1680,8 @@ namespace TinyDB
             {
                 lock (Header)
                 {
-                    lock (_globalLock)
-                    {
-                        HeaderFactory.WriteToFile(Header, Storage);
-                        Header.IsDirty = false;
-                    }
+                    HeaderFactory.WriteToFile(Header, Storage);
+                    Header.IsDirty = false;
                 }
             }
 
@@ -1625,7 +1720,7 @@ namespace TinyDB
 
                 lock (indexNode)
                 {
-                    indexNode.ID = new Guid(new byte[] { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 });
+                    indexNode.ID = RootIndexID;
                     indexNode.IsDeleted = true;
                     indexNode.Right = new IndexLink();
                     indexNode.Left = new IndexLink();
@@ -1636,7 +1731,6 @@ namespace TinyDB
             }
             storageStream.Flush();
         }
-
     }
 
     public interface IByteSerialisable
@@ -1652,7 +1746,14 @@ namespace TinyDB
         void FromBytes(byte[] source);
     }
 
-
+    /// <summary>
+    /// Provides Path->ID indexing
+    /// </summary>
+    /// <remarks>
+    /// TinyDB stores files by GUID, and the file name is stored inside the entry.
+    /// The result of path index is stored as a special document in the database, and used
+    /// to look up files by path.
+    /// </remarks>
     public class PathIndex<T> where T : IByteSerialisable, new()
     {
         // Flag values
@@ -1983,4 +2084,17 @@ namespace TinyDB
         }
     }
 
+    public class SerialGuid : IByteSerialisable {
+        internal Guid _guid;
+        public static SerialGuid Wrap(Guid g) { return new SerialGuid { _guid = g }; }
+        
+        public static implicit operator SerialGuid(Guid other){ return Wrap(other); }
+        public static explicit operator Guid(SerialGuid other){ return other?._guid ?? Guid.Empty; }
+        public byte[] ToBytes() { return _guid.ToByteArray(); }
+        public void FromBytes(byte[] source)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            _guid = new Guid(source);
+        }
+    }
 }

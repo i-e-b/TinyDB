@@ -137,6 +137,20 @@ namespace TinyDbTests
                 Assert.That((string)target.Get("my/other/path/longer"), Is.EqualTo("value4"));
             }
         }
+
+        [Test]
+        public void indexing_guid_values () {
+            var source = new PathIndex<SerialGuid>();
+
+            var guid1 = Guid.NewGuid();
+            var guid2 = Guid.NewGuid();
+            source.Add("/etc/init.d/01-system.sh", guid1);
+            source.Add("/etc/init.d/02-user.sh", guid2);
+            
+            Assert.That((Guid)source.Get("/etc/init.d/01-system.sh"), Is.EqualTo(guid1));
+            Assert.That((Guid)source.Get("/etc/init.d/02-user.sh"), Is.EqualTo(guid2));
+            Assert.That(source.Get("/etc/init.d/03-custom.sh"), Is.EqualTo(null));
+        }
     }
 
 

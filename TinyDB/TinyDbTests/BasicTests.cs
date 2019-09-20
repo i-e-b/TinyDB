@@ -155,6 +155,35 @@ namespace TinyDbTests
             }
         }
 
+        
+        [Test]
+        public void can_get_files_by_complete_path () {
+
+            using (var subject = Datastore.TryConnect(TestFilePath)) {
+                Assert.That(subject, Is.Not.Null, "Database connector failed");
+
+                var ms1 = MakeSourceStream("This is my file content");
+
+                subject.Store("find/me/test1", ms1);
+
+                string recovered;
+
+                using (var ms2 = new MemoryStream())
+                {
+
+                    var result = subject.Read("find/me/test1", ms2);
+
+                    Assert.That(result, Is.Not.Null, "Null entry returned");
+                    Assert.That(result.FileName, Is.EqualTo("find/me/test1"));
+
+                    ms2.Seek(0, SeekOrigin.Begin);
+                    recovered = Encoding.UTF8.GetString(ms2.ToArray());
+                }
+
+                Assert.That(recovered, Is.EqualTo("This is my file content"));
+            }
+        }
+
         [Test]
         public void can_find_files_by_partial_path () {
 
