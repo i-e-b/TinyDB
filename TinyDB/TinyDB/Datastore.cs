@@ -114,14 +114,13 @@ namespace TinyDB
         /// </summary>
         private void StorePathIndex()
         {
+            //return;
             var index = GetPathIndex();
             using (var ms = new MemoryStream())
             {
                 index.WriteTo(ms);
                 ms.Seek(0, SeekOrigin.Begin);
                 var entry = new EntryInfo("PathIndex") { ID = Engine.PathIndexID, FileLength = (uint)ms.Length };
-
-                //_engine.Write(entry, ms); // need a version of this that can overwrite -- as this *always* crashes at the moment
                 _engine.Overwrite(entry, ms);
             }
         }
@@ -819,6 +818,25 @@ namespace TinyDB
         {
             lock (_cacheLock)
             {
+                // Filter the path index object so we have only one
+                int lastPathIndex = -1;
+                for (int j = 0; j < indexPage.Nodes.Length; j++)
+                {
+                    if (indexPage.Nodes[j]?.ID == Engine.PathIndexID && indexPage.Nodes[j]?.IsDeleted == false)
+                    {
+                        lastPathIndex = j;
+                        indexPage.Nodes[j].ID = Guid.NewGuid(); // hide it
+                        indexPage.Nodes[j].IsDeleted = true; // delete it
+                    }
+                }
+                if (lastPathIndex >= 0)
+                { // restore last one
+                    if (indexPage.Nodes[lastPathIndex] == null) throw new Exception("Invalid state");
+                    indexPage.Nodes[lastPathIndex].ID = Engine.PathIndexID;
+                    indexPage.Nodes[lastPathIndex].IsDeleted = false;
+                }
+
+
                 if (!_cache.ContainsKey(indexPage.PageID))
                 {
                     if (_cache.Count >= CACHE_SIZE)
@@ -1353,7 +1371,10 @@ namespace TinyDB
                             ? BinaryInsertNode(baseNode.Left, baseNode, target, engine)
                             : BinaryInsert(target, GetChildIndexNode(baseNode.Left, engine), engine, acceptCollision);
                     default:
-                        if (acceptCollision) { return BinaryInsertNode(null, baseNode, target, engine);}
+                        if (acceptCollision) {
+                            DataFactory.MarkAsEmpty(baseNode.DataPageID, engine);
+                            return BinaryInsertNode(null, baseNode, target, engine);
+                        }
                         throw new Exception("GUID collision.");
                 }
             }
@@ -1536,7 +1557,6 @@ namespace TinyDB
                 // Mark all data blocks (from data pages) as IsEmpty = true
                 DataFactory.MarkAsEmpty(indexNode.DataPageID, this);
                 indexNode.IsDeleted = true;
-                //indexNode.DataPageID = Header.FreeDataPageID; // THIS IS NOT WORKING
             }
 
             // In this moment, the index are ready and saved. I use to add the file

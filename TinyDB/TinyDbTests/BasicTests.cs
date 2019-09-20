@@ -305,6 +305,7 @@ namespace TinyDbTests
 
             int count = 0;
             const int target = 100;
+            long rawSize = 0;
 
             using (var stream = new MemoryStream())
             {
@@ -319,7 +320,9 @@ namespace TinyDbTests
                         {
                             var data = MakeSourceStream("Data for item " + j);
                             var info = subject.Store($"file_{j}", data);
-                            
+
+                            rawSize += info.FileName.Length + data.Length;
+
                             ThreadPool.QueueUserWorkItem(y => {
                                 using (var result = new MemoryStream())
                                 {
@@ -346,6 +349,10 @@ namespace TinyDbTests
 
                 var everything = subject.ListFiles();
                 Assert.That(everything.Length, Is.EqualTo(target), $"Expected {target} files, but got {everything.Length}");
+
+                subject.Flush();
+
+                Console.WriteLine($"Total storage size = {stream.Length} for data = {rawSize}");
             }
         }
 
