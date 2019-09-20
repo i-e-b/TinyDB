@@ -202,7 +202,7 @@ namespace TinyDB
         /// <summary>
         /// List all files currently stored
         /// </summary>
-        public EntryInfo[] ListFiles()
+        [NotNull]public EntryInfo[] ListFiles()
         {
             return _engine.ListAllFiles();
         }
@@ -221,14 +221,13 @@ namespace TinyDB
         }
 
         /// <summary>
-        /// Find all files under a path root
+        /// Find all file paths under a path root
         /// </summary>
         /// <param name="pathRoot">Left-side of a path to match</param>
-        /// <returns>Found file entries</returns>
-        public EntryInfo[] FindFiles(string pathRoot)
+        /// <returns>Found file paths</returns>
+        [NotNull]public IEnumerable<string> FindFiles(string pathRoot)
         {
-            // TODO: the plan is to have pages of path-Trie linked to file IDs
-            return null;
+            return GetPathIndex().Search(pathRoot);
         }
 
         /// <summary>
@@ -1668,7 +1667,7 @@ namespace TinyDB
             return true; // Confirm deletion
         }
 
-        public EntryInfo[] ListAllFiles()
+        [NotNull]public EntryInfo[] ListAllFiles()
         {
             // Get root index page from cache
             var pageIndex = CacheIndexPage.GetPage(Header.IndexRootPageID);
@@ -1844,6 +1843,47 @@ namespace TinyDB
             var node = _nodes[nodeIdx];
             SetValue(node.DataIdx, default);
             node.DataIdx = EMPTY_OFFSET;
+        }
+        
+        /// <summary>
+        /// Return all knows paths that start with the given prefix
+        /// </summary>
+        /// <param name="prefix"></param>
+        /// <returns></returns>
+        [NotNull, ItemNotNull]public IEnumerable<string> Search(string prefix)
+        {
+            if (string.IsNullOrEmpty(prefix)) return new string[0];
+
+            // get a node for the prefix
+            var nodeIdx = WalkPath(prefix);
+            var result = new List<string>();
+
+            // now recurse down the tree and list out all possibilities
+            var start = prefix.Substring(0, prefix.Length - 1);
+            RecurseIntoList(start, nodeIdx, result);
+
+            return result;
+        }
+
+        private void RecurseIntoList(string prefix, int nodeIdx, [NotNull]List<string> result)
+        {
+            if (nodeIdx < 0 || nodeIdx >= _nodes.Count) return;
+
+            var node = _nodes[nodeIdx];
+
+            if (node.DataIdx >= 0) result.Add(prefix + node.Ch);
+
+            if (node.Match >= 0) {
+                RecurseIntoList(prefix + node.Ch, node.Match, result);
+            }
+
+            if (node.Left >= 0) {
+                RecurseIntoList(prefix, node.Left, result);
+            }
+
+            if (node.Right >= 0) {
+                RecurseIntoList(prefix, node.Right, result);
+            }
         }
 
         private int WalkPath([NotNull]string path)

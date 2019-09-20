@@ -199,10 +199,10 @@ namespace TinyDbTests
                 subject.Store("not/me/test3", MakeSourceStream());
                 subject.Store("find/not/me/test4", MakeSourceStream());
 
-                var result = subject.FindFiles("find/me");
-                Assert.That(result, Is.Not.Null, "Null array returned");
-                
-                var list = string.Join(", ", result.Select(e=>e.FileName));
+                var result = subject.FindFiles("find/me").ToList();
+                Assert.That(result, Is.Not.Null, "Null sequence returned");
+
+                var list = string.Join(", ", result);
                 Assert.That(list, Is.EqualTo("find/me/test1, find/me/test2"));
             }
         }

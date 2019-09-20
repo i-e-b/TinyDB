@@ -70,6 +70,21 @@ namespace TinyDbTests
             Assert.That((string)r2, Is.EqualTo("value3"));
             Assert.That(r3, Is.Null);
         }
+        
+        [Test]
+        public void can_query_keys_using_a_partial_key ()
+        {
+            var subject = new PathIndex<ByteString>();
+
+            subject.Add("my/path/1", "value1");
+            subject.Add("my/path/2", "value2");
+            subject.Add("my/other/path", "value3");
+            subject.Add("my/other/path/longer", "value4");
+
+            var result = subject.Search("my/pa");
+
+            Assert.That(string.Join(",", result), Is.EqualTo("my/path/1,my/path/2"));
+        }
 
         [Test]
         public void can_remove_values_from_keys () {
